@@ -348,7 +348,7 @@ async def back_handler(
                         text = f"📦 <b>Категория:</b> {category.name if category else 'Неизвестно'}\n<b>Подкатегория:</b> {subcategory.name}\n\nВыберите товар:"
                     else:
                         markup = await categories_keyboard(session)
-                        text = "🛋️ <b>Выберите категорию:</b>"
+                        text = "🛋️ <b> Выберите категорию:</b>"
                 else:
                     markup = await categories_keyboard(session)
                     text = "🛋️ <b>Выберите категорию:</b>"
