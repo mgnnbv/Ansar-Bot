@@ -3,21 +3,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-# from engine import AsyncSessionLocal
-
-
 from .models import Category, Subcategory, Product
 
 
 async def get_categories(session: AsyncSession) -> list[Category]:
+    """Получить все категории"""
     result = await session.execute(select(Category).order_by(Category.id))
     return result.scalars().all()
+
+
+async def get_category(session: AsyncSession, category_id: int) -> Category | None:
+    """Получить категорию по ID"""
+    result = await session.execute(
+        select(Category).where(Category.id == category_id)
+    )
+    return result.scalars().first()
 
 
 async def get_subcategories(
     session: AsyncSession,
     category_id: int
 ) -> list[Subcategory]:
+    """Получить подкатегории по ID категории"""
     result = await session.execute(
         select(Subcategory).where(Subcategory.category_id == category_id)
     )
@@ -28,98 +35,66 @@ async def get_subcategory(
     session: AsyncSession,
     subcategory_id: int
 ) -> Subcategory | None:
+    """Получить подкатегорию по ID"""
     result = await session.execute(
         select(Subcategory).where(Subcategory.id == subcategory_id)
     )
     return result.scalars().first()
 
 
-
 async def get_products(session: AsyncSession, subcategory_id: int) -> list[Product]:
+    """Получить товары по ID подкатегории"""
     result = await session.execute(
         select(Product)
         .where(Product.subcategory_id == subcategory_id)
-        .options(selectinload(Product.images))  
+        .options(selectinload(Product.images))
+    )
+    return result.scalars().all()
+
+
+async def get_product(session: AsyncSession, product_id: int) -> Product | None:
+    """Получить товар по ID"""
+    result = await session.execute(
+        select(Product)
+        .where(Product.id == product_id)
+        .options(selectinload(Product.images))
+    )
+    return result.scalars().first()
+
+
+async def get_products_by_category(session: AsyncSession, category_id: int) -> list[Product]:
+    """Получить все товары категории (через подкатегории)"""
+    subcategories = await get_subcategories(session, category_id)
+    
+    all_products = []
+    for subcategory in subcategories:
+        products = await get_products(session, subcategory.id)
+        all_products.extend(products)
+    
+    return all_products
+
+
+async def search_products(session: AsyncSession, search_term: str) -> list[Product]:
+    """Поиск товаров по названию"""
+    result = await session.execute(
+        select(Product)
+        .where(Product.name.ilike(f"%{search_term}%"))
+        .options(selectinload(Product.images))
+        .limit(20)  # Ограничиваем количество результатов
     )
     return result.scalars().all()
 
 
 
-# PRODUCTS = [
-#     {
-#         "name": "🇷🇺 Роскошная Российская Спальная Мебель – Коллекция Комфорт",
-#         "short_description": "Высококачественная спальная мебель российского производства. Элегантный дизайн и максимальный   комфорт для сна.",
-#         "country": "Россия",
-#         "size": "160x200, 180x200",
-#         "price": 15000.0,
-#         "category_id": 1,
-#         "subcategory_id": 1
-#     },
-#     {
-#         "name": "🇷🇺 Российская Спальная Мебель премиум-класса – Серия «Элегант»",
-#         "short_description": "Прочные и стильные кровати и спальни для современного дома. Надёжность и уют в каждой детали.",
-#         "country": "Россия",
-#         "size": "180x200, 200x200",
-#         "price": 18000.0,
-#         "category_id": 1,
-#         "subcategory_id": 1
-#     },
-
-#     {
-#         "name": "🇹🇷 Элегантная Турецкая Спальная Мебель – Коллекция «Люкс»",
-#         "short_description": "Стильная турецкая мебель премиум-класса с современным дизайном и долговечными материалами.",
-#         "country": "Турция",
-#         "size": "160x200, 180x200",
-#         "price": 16000.0,
-#         "category_id": 1,
-#         "subcategory_id": 2
-#     },
-#     {
-#         "name": "🇹🇷 Турецкая Мебель премиум-класса – Серия «Royal»",
-#         "short_description": "Элегантные кровати и спальни из Турции. Идеальное сочетание стиля, качества и комфорта.",
-#         "country": "Турция",
-#         "size": "180x200, 200x200",
-#         "price": 20000.0,
-#         "category_id": 1,
-#         "subcategory_id": 2
-#     },
-#     {
-#         "name": "🇹🇷 Современная Турецкая Спальная Мебель – Коллекция «Modern»",
-#         "short_description": "Мебель с уникальным дизайном, удобными кроватями и мягкими элементами для максимального комфорта.",
-#         "country": "Турция",
-#         "size": "160x200, 200x200",
-#         "price": 17000.0,
-#         "category_id": 1,
-#         "subcategory_id": 2
-#     },
-
-#     {
-#         "name": "Кровать Мечты для Современной Спальни – Модель «Comfort Plus»",
-#         "short_description": "Современная кровать с удобным основанием и стильным дизайном. Отличный выбор для любой спальни.",
-#         "country": "Россия/Турция",
-#         "size": "160x200, 180x200",
-#         "price": 15000.0,
-#         "category_id": 1,
-#         "subcategory_id": 3
-#     },
-#     {
-#         "name": "Кровать Элегантная и Надёжная – Модель «DreamLine»",
-#         "short_description": "Прочная и красивая кровать, создающая уют и комфорт для сна. Подходит для любых интерьеров.",
-#         "country": "Россия/Турция",
-#         "size": "180x200, 200x200",
-#         "price": 18000.0,
-#         "category_id": 1,
-#         "subcategory_id": 3
-#     },
-# ]
-
 # async def seed_products():
+#     from .engine import AsyncSessionLocal
+#     
 #     async with AsyncSessionLocal() as session:
 #         exists = await session.execute(select(Product))
 #         if exists.scalars().first():
 #             print("📦 Продукты уже существуют")
 #             return
-
+#
 #         for prod in PRODUCTS:
 #             product = Product(
 #                 name=prod["name"],
@@ -131,17 +106,10 @@ async def get_products(session: AsyncSession, subcategory_id: int) -> list[Produ
 #                 subcategory_id=prod["subcategory_id"]
 #             )
 #             session.add(product)
-
+#
 #         await session.commit()
 #         print("✅ Продукты добавлены")
-
+#
+#
 # if __name__ == "__main__":
 #     asyncio.run(seed_products())
-
-
-
-
-
-
-
-

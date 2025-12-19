@@ -30,9 +30,13 @@ class Subcategory(Base):
         nullable=False
     )
 
-
     category: Mapped["Category"] = relationship(
         back_populates="subcategories"
+    )
+
+    products: Mapped[list["Product"]] = relationship(
+        back_populates="subcategory",
+        cascade="all, delete-orphan"
     )
 
 
@@ -40,19 +44,24 @@ class Product(Base):
     __tablename__ = "products"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    short_description: Mapped[str] = mapped_column(Text, nullable=True)
-    country: Mapped[str] = mapped_column(String, nullable=True)
-    size: Mapped[str] = mapped_column(String, nullable=True)  
-    price: Mapped[float] = mapped_column(Float, nullable=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)  # Название
+    short_description: Mapped[str] = mapped_column(Text, nullable=True)  # Краткое Описание
+    additional_info: Mapped[str] = mapped_column(Text, nullable=True)  # Доп Инфо (1 параметр)
 
-    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), nullable=False)
-    subcategory_id: Mapped[int] = mapped_column(ForeignKey("subcategories.id"), nullable=True)
+    subcategory_id: Mapped[int] = mapped_column(
+        ForeignKey("subcategories.id"), 
+        nullable=True
+    )
+
+    subcategory: Mapped["Subcategory"] = relationship(
+        back_populates="products"
+    )
 
     images: Mapped[list["ProductImage"]] = relationship(
         "ProductImage",
         back_populates="product",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
+        order_by="ProductImage.id"
     )
 
 
