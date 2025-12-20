@@ -298,99 +298,82 @@ async def order_images(message: Message, state: FSMContext):
 async def back_handler(
     callback: CallbackQuery,
     callback_data: BackCallback,
-    state: FSMContext
 ):
-    """Обработчик навигации "назад" """
-    to = callback_data.to
-    parent_id = callback_data.parent_id
-    
     if not callback.message:
-        await callback.answer("Ошибка: сообщение не найдено")
+        await callback.answer("Сообщение не найдено", show_alert=True)
         return
-    
+
     try:
         async with AsyncSessionLocal() as session:
-            if to == "categories":
-                # Просто показываем все категории
+            if callback_data.to == "categories":
                 markup = await categories_keyboard(session)
                 text = "🛋️ <b>Выберите категорию:</b>"
-                
-            elif to == "subcategories":
-                # Возвращаемся к подкатегориям категории (parent_id = ID категории)
-                if parent_id:
-                    category = await get_category(session, parent_id)
-                    if category:
-                        subcategories = await get_subcategories(session, parent_id)
-                        markup = await subcategories_keyboard(
-                            subcategories, 
-                            category_id=parent_id
-                        )
-                        text = f"📂 <b>Категория:</b> {category.name}\n\nВыберите подкатегорию:"
-                    else:
-                        markup = await categories_keyboard(session)
-                        text = "🛋️ <b>Выберите категорию:</b>"
-                else:
-                    markup = await categories_keyboard(session)
-                    text = "🛋️ <b>Выберите категорию:</b>"
-            
-            elif to == "products":
-                # Возвращаемся к товарам подкатегории (parent_id = ID подкатегории)
-                if parent_id:
-                    subcategory = await get_subcategory(session, parent_id)
-                    if subcategory:
-                        products = await get_products(session, parent_id)
-                        category = await get_category(session, subcategory.category_id)
-                        
-                        markup = await products_keyboard(
-                            products, 
-                            subcategory_id=parent_id
-                        )
-                        text = f"📦 <b>Категория:</b> {category.name if category else 'Неизвестно'}\n<b>Подкатегория:</b> {subcategory.name}\n\nВыберите товар:"
-                    else:
-                        markup = await categories_keyboard(session)
-                        text = "🛋️ <b> Выберите категорию:</b>"
-                else:
-                    markup = await categories_keyboard(session)
-                    text = "🛋️ <b>Выберите категорию:</b>"
-            
-            elif to == "product_detail":
-    # Возвращаемся из детали товара в список товаров (parent_id = ID товара)
-                if parent_id:
-                    product = await get_product(session, parent_id)
-                    if product and product.subcategory_id:
-                        # Получаем товары этой подкатегории
-                        products = await get_products(session, product.subcategory_id)
-                        
-                        # Получаем категорию товара
-                        category_id = None
-                        if product.subcategory:
-                            category_id = product.subcategory.category_id
-                        
-                        # ИСПРАВЛЕННЫЙ ВЫЗОВ:
-                        markup = await products_keyboard(
-                            products,
-                            subcategory_id=product.subcategory_id,
-                            category_id=category_id  # ← Передаем category_id
-                        )
-                        
-                        text = f"📦 <b>Подкатегория:</b> {product.subcategory.name if product.subcategory else 'Неизвестно'}\n\nВыберите товар:"
-                    else:
-                        markup = await categories_keyboard(session)
-                        text = "🛋️ <b>Выберите категорию:</b>"
-                else:
-                    markup = await categories_keyboard(session)
-                    text = "🛋️ <b>Выберите категорию:</b>"
-            
-            await callback.message.edit_text(
-                text=text,
-                reply_markup=markup,
-                parse_mode="HTML"
-            )
-            await callback.answer()
-            
+
+            elif callback_data.to == "subcategories":
+                category = await get_category(session, callback_data.parent_id)
+                subcategories = await get_subcategories(session, callback_data.parent_id)
+
+                markup = await subcategories_keyboard(
+                    subcategories,
+                    category_id=callback_data.parent_id
+                )
+
+                text = (
+                    f"📂 <b>Категория:</b> "
+                    f"{category.name if category else 'Неизвестно'}\n\n"
+                    "Выберите подкатегорию:"
+                )
+
+            elif callback_data.to == "products":
+                subcategory = await get_subcategory(session, callback_data.parent_id)
+                products = await get_products(session, callback_data.parent_id)
+                category = await get_category(session, subcategory.category_id)
+
+                markup = await products_keyboard(
+                    products,
+                    subcategory_id=callback_data.parent_id
+                )
+
+                text = (
+                    f"📦 <b>Категория:</b> {category.name if category else 'Неизвестно'}\n"
+                    f"<b>Подкатегория:</b> {subcategory.name}\n\n"
+                    "Выберите товар:"
+                )
+
+            elif callback_data.to == "product_detail":
+                product = await get_product(session, callback_data.parent_id)
+                products = await get_products(session, product.subcategory_id)
+
+                markup = await products_keyboard(
+                    products,
+                    subcategory_id=product.subcategory_id,
+                    category_id=product.subcategory.category_id
+                )
+
+                text = (
+                    f"📦 <b>Подкатегория:</b> "
+                    f"{product.subcategory.name if product.subcategory else 'Неизвестно'}\n\n"
+                    "Выберите товар:"
+                )
+            else:
+                await callback.answer("Неизвестное действие", show_alert=True)
+                return
+
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
+
     except Exception as e:
-        logger.error(f"Ошибка в back_handler: {e}")
-        await callback.answer("Произошла ошибка при навигации")
+        logger.exception("Ошибка в back_handler")
+        await callback.answer("Произошла ошибка при навигации", show_alert=True)
+        return
+
+    else:
+        await callback.answer()
+
+
 
 
 @router.callback_query(F.data == "back_to_catalog")
