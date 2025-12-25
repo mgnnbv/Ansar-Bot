@@ -26,3 +26,5 @@ class AskCallback(CallbackData, prefix="ask"):
 class BackCallback(CallbackData, prefix="back"):
     to: Literal["categories", "subcategories", "products", "product_detail"]
     parent_id: Optional[int] = None
+
+

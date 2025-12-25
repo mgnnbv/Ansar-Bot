@@ -1,7 +1,15 @@
 import asyncio
+from typing import List
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
+
+from databases.engine import AsyncSessionLocal
+from fsm import EditProductStates
 
 from .models import Category, Subcategory, Product
 
@@ -62,17 +70,6 @@ async def get_product(session: AsyncSession, product_id: int) -> Product | None:
     return result.scalars().first()
 
 
-async def get_products_by_category(session: AsyncSession, category_id: int) -> list[Product]:
-    """Получить все товары категории (через подкатегории)"""
-    subcategories = await get_subcategories(session, category_id)
-    
-    all_products = []
-    for subcategory in subcategories:
-        products = await get_products(session, subcategory.id)
-        all_products.extend(products)
-    
-    return all_products
-
 
 async def search_products(session: AsyncSession, search_term: str) -> list[Product]:
     """Поиск товаров по названию"""
@@ -80,36 +77,79 @@ async def search_products(session: AsyncSession, search_term: str) -> list[Produ
         select(Product)
         .where(Product.name.ilike(f"%{search_term}%"))
         .options(selectinload(Product.images))
-        .limit(20)  # Ограничиваем количество результатов
+        .limit(20)  
     )
     return result.scalars().all()
 
 
+async def get_products_by_category_id(
+    session: AsyncSession,
+    category_id: int
+) -> List[Product]:
+    """Получить все активные товары категории"""
+    from sqlalchemy import select
+    
+    stmt = select(Product).where(
+        Product.category_id == category_id,
+        Product.is_active == True
+    ).order_by(Product.created_at.desc())
+    
+    result = await session.execute(stmt)
+    return result.scalars().all()
 
-# async def seed_products():
-#     from .engine import AsyncSessionLocal
-#     
-#     async with AsyncSessionLocal() as session:
-#         exists = await session.execute(select(Product))
-#         if exists.scalars().first():
-#             print("📦 Продукты уже существуют")
-#             return
-#
-#         for prod in PRODUCTS:
-#             product = Product(
-#                 name=prod["name"],
-#                 short_description=prod["short_description"],
-#                 country=prod["country"],
-#                 size=prod["size"],
-#                 price=prod["price"],
-#                 category_id=prod["category_id"],
-#                 subcategory_id=prod["subcategory_id"]
-#             )
-#             session.add(product)
-#
-#         await session.commit()
-#         print("✅ Продукты добавлены")
-#
-#
-# if __name__ == "__main__":
-#     asyncio.run(seed_products())
+
+async def get_products_by_category(session: AsyncSession, category_id: int) -> list[Product]:
+    """Получить товары по ID категории (без подкатегорий)"""
+    result = await session.execute(
+        select(Product)
+        .where(
+            (Product.category_id == category_id) &
+            (Product.subcategory_id == None)  # ← Только товары БЕЗ подкатегорий
+        )
+        .options(selectinload(Product.images))
+    )
+
+    return result.scalars().all()
+
+
+
+async def show_product_list_by_name(message: Message, state: FSMContext, products, search_query):
+    """Показ списка найденных товаров"""
+    builder = InlineKeyboardBuilder()
+    
+    for product in products:
+        # Формируем текст кнопки
+        category_name = product.category.name if product.category else "Без кат."
+        images_count = len(product.images)
+        
+        button_text = f"🛒 {product.name}"
+        if len(button_text) > 35:
+            button_text = button_text[:32] + "..."
+        
+        builder.button(
+            text=button_text,
+            callback_data=f"select_product_{product.id}"
+        )
+        
+        # Дополнительная информация под кнопкой
+        builder.button(
+            text=f"📁 {category_name} | 📷 {images_count}",
+            callback_data=f"info_{product.id}"
+        )
+    
+    # Навигационные кнопки
+    builder.button(text="🔍 Новый поиск", callback_data="new_search_name")
+    builder.button(text="📋 Показать все товары", callback_data="show_all_products")
+    builder.button(text="❌ Отменить", callback_data="cancel_edit")
+    
+    builder.adjust(1, 2, 2, 1)  # Настраиваем расположение
+    
+    # Формируем текст сообщения
+    found_text = f"🔍 <b>Найдено товаров:</b> {len(products)} по запросу '<code>{search_query}</code>'"
+    
+    await message.answer(
+        found_text,
+        reply_markup=builder.as_markup(),
+        parse_mode=BaseModel.HTML
+    )
+    await state.set_state(EditProductStates.waiting_for_product_choice)

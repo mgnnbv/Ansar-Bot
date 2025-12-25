@@ -1,7 +1,8 @@
 from typing import Optional
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
-from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 from databases.crud import get_categories
 from handlers.callbacks import (
     BackCallback, ProductCallback, ProductDetailCallback, 
@@ -42,8 +43,9 @@ async def subcategories_keyboard(
 
     if not subcategories:
         builder.button(
-            text="💬 Задать вопрос", 
-            callback_data="ask_question")
+        text="💬 Задать вопрос", 
+        callback_data=AskCallback().pack()
+            )
         builder.button(
             text="📞 Консультация", 
             callback_data="request_consultation")
@@ -64,75 +66,112 @@ async def subcategories_keyboard(
 
 
 async def products_keyboard(
-    products, 
-    subcategory_id: int,
-    category_id: Optional[int] = None,  # ← Сделайте опциональным
-    row_amount: int = 1) -> InlineKeyboardMarkup:
-    """Клавиатура со списком продуктов"""
+    products,
+    subcategory_id: int | None = None,
+    category_id: int | None = None,
+    row_amount: int = 1
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
-    if not products:
-        builder.button(
-            text="Нет товаров в этой подкатегории",
-            callback_data="no_products")
-    else:
+    if products:  # ✅ ТОЛЬКО если есть товары
         for product in products:
-            product_text = f"📦 {product.name}"
-                
             builder.button(
-                text=product_text,
-                callback_data=ProductCallback(product_id=product.id).pack())
-
+                text=f"📦 {product.name}",
+                callback_data=ProductCallback(product_id=product.id).pack()
+            )
+    else:  # ✅ Если товаров нет - показываем сообщение
+        builder.button(
+            text="Товаров пока нет",
+            callback_data="no_products"
+        )
     
-    builder.button(
-        text="⬅️ Назад",
-        callback_data=BackCallback(
-            to="subcategories",
-            parent_id=category_id  
-        ).pack())
-
-    builder.adjust(row_amount, 1)
+    # Кнопка "Назад"
+    if subcategory_id and category_id:
+        builder.button(
+            text="⬅️ Назад",
+            callback_data=BackCallback(
+                to="subcategories",
+                parent_id=category_id  # Возвращаемся в подкатегории категории
+            ).pack()
+        )
+    elif category_id:
+        builder.button(
+            text="⬅️ Назад",
+            callback_data=BackCallback(
+                to="categories"
+            ).pack()
+        )
+    else:
+        builder.button(
+            text="⬅️ Назад",
+            callback_data=BackCallback(to="categories").pack()
+        )
+    
+    builder.adjust(row_amount, 1)  # Товары по 1 в ряд, потом кнопка "Назад"
     return builder.as_markup()
+
 
 
 async def command_keyboard(
     category_id: int = None,
     subcategory_id: int = None,
-    product_id: int =None) -> InlineKeyboardMarkup:
-    """Универсальная клавиатура с командами"""
+    product_id: int = None,
+    empty: bool = False
+) -> InlineKeyboardMarkup:
+
     builder = InlineKeyboardBuilder()
-    
-    builder.button(
-        text="💬 Задать вопрос", 
-        callback_data=AskCallback().pack())
-    builder.button(
-        text="📞 Консультация", 
-        callback_data="request_consultation")
-    builder.button(
-        text="🛒 Оформить заказ", 
-        callback_data="place_order")
-    
-    if subcategory_id:
+
+    # ---------- КНОПКА НАЗАД ----------
+    if empty and category_id:
+        builder.button(
+            text="⬅️ Назад к подкатегориям",
+            callback_data=BackCallback(
+                to="subcategories",
+                parent_id=category_id
+            ).pack()
+        )
+
+    elif product_id and subcategory_id:
         builder.button(
             text="⬅️ Назад к товарам",
             callback_data=BackCallback(
                 to="products",
-                parent_id=subcategory_id  
-            ).pack())
-    elif category_id:
+                parent_id=subcategory_id
+            ).pack()
+        )
+
+    elif subcategory_id and category_id:
         builder.button(
-            text="⬅️ Назад в подкатегории",
+            text="⬅️ Назад к подкатегориям",
             callback_data=BackCallback(
                 to="subcategories",
-                parent_id=category_id  
-            ).pack())
+                parent_id=category_id
+            ).pack()
+        )
+
     else:
         builder.button(
             text="⬅️ Назад в каталог",
-            callback_data=BackCallback(to="categories").pack())
-    
-    builder.adjust(2, 1, 1) 
+            callback_data=BackCallback(to="categories").pack()
+        )
+
+    builder.button(
+        text="💬 Задать вопрос",
+        callback_data=AskCallback().pack()
+    )
+    builder.button(
+        text="📞 Консультация",
+        callback_data="request_consultation"
+    )
+    builder.button(
+        text="🛒 Оформить заказ",
+        callback_data="place_order"
+    )
+
+    builder.adjust(1, 2, 1)
     return builder.as_markup()
+
+
 
 async def consultation_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура с ссылкой на чат менеджера."""
@@ -141,34 +180,6 @@ async def consultation_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(
                     text="💬 Перейти в чат с менеджером",
                     url=f"https://t.me/{MANAGER_USERNAME}")]])
-
-
-# def cart_keyboard() -> InlineKeyboardMarkup:
-#     """Клавиатура для корзины"""
-#     builder = InlineKeyboardBuilder()
-    
-#     builder.button(text="🛒 Оформить заказ", callback_data="checkout")
-#     builder.button(text="🗑️ Очистить корзину", callback_data="clear_cart")
-#     builder.button(text="📦 Продолжить покупки", callback_data="continue_shopping")
-#     builder.button(text="🏠 Главное меню", callback_data="main_menu")
-    
-#     builder.adjust(2, 1, 1)
-#     return builder.as_markup()
-
-
-# async def main_menu_keyboard() -> InlineKeyboardMarkup:
-#     """Главное меню бота"""
-#     builder = InlineKeyboardBuilder()
-    
-#     builder.button(text="📂 Каталог", callback_data="catalog")
-#     builder.button(text="🛒 Корзина", callback_data="cart")
-#     builder.button(text="📋 Мои заказы", callback_data="my_orders")
-#     builder.button(text="👤 Профиль", callback_data="profile")
-#     builder.button(text="📞 Контакты", callback_data="contacts")
-#     builder.button(text="ℹ️ О компании", callback_data="about")
-    
-#     builder.adjust(2, 2, 2)
-#     return builder.as_markup()
 
 
 def back_to_catalog_keyboard() -> InlineKeyboardMarkup:
@@ -180,5 +191,3 @@ def back_to_catalog_keyboard() -> InlineKeyboardMarkup:
         callback_data="back_to_catalog")
     
     return builder.as_markup()
-
-
