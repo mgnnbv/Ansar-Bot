@@ -7,6 +7,8 @@ class Base(DeclarativeBase):
     pass
 
 
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 class Category(Base):
     __tablename__ = "categories"
 
@@ -14,9 +16,14 @@ class Category(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
 
     subcategories: Mapped[list["Subcategory"]] = relationship(
-        back_populates="category",
-        cascade="all, delete-orphan"
+        "Subcategory",
+        back_populates="category"
     )
+    products: Mapped[list["Product"]] = relationship(
+        "Product",
+        back_populates="category"
+    )
+
 
 
 class Subcategory(Base):
@@ -45,17 +52,19 @@ class Product(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)  # Название
-    short_description: Mapped[str] = mapped_column(Text, nullable=True)  # Краткое Описание
-    additional_info: Mapped[str] = mapped_column(Text, nullable=True)  # Доп Инфо (1 параметр)
+    short_description: Mapped[str] = mapped_column(Text, nullable=True)  # Краткое описание
+    additional_info: Mapped[str] = mapped_column(Text, nullable=True)  # Доп. информация (опционально)
 
     subcategory_id: Mapped[int] = mapped_column(
         ForeignKey("subcategories.id"), 
         nullable=True
     )
-
     subcategory: Mapped["Subcategory"] = relationship(
         back_populates="products"
     )
+
+    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), nullable=True)
+    category: Mapped["Category"] = relationship(back_populates="products")
 
     images: Mapped[list["ProductImage"]] = relationship(
         "ProductImage",
@@ -69,7 +78,7 @@ class ProductImage(Base):
     __tablename__ = "product_images"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    url: Mapped[str] = mapped_column(String, nullable=False)  
+    url: Mapped[str] = mapped_column(String, nullable=False)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
 
     product: Mapped["Product"] = relationship(back_populates="images")

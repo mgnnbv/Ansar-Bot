@@ -3,10 +3,13 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, InputMediaPhoto, ReplyKeyboardRemove, KeyboardButton
 from aiogram.fsm.context import FSMContext
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-# from aiogram.utils.keyboard import    
+from sqlalchemy.orm import selectinload
+from aiogram.types import FSInputFile
 
 
+from databases.models import Product, Subcategory
 from handlers.callbacks import (
     AskCallback, CategoryCallback, SubcategoryCallback, 
     ProductCallback, ProductDetailCallback, 
@@ -18,18 +21,18 @@ from keyboards.user_keyboards import (
     subcategories_keyboard, command_keyboard, 
 )
 from databases.crud import (
-    get_subcategories, get_products, 
+    get_products_by_category, get_subcategories, get_products, 
     get_subcategory, get_category, get_product
 )
 
 from fsm import (QuestionStates, OrderStates
 )
 
-router = Router()
+user_router = Router()
 
 MANAGER_CHAT_ID = 5129105635
 
-@router.message(CommandStart())
+@user_router.message(CommandStart())
 async def send_welcome(message: Message, state: FSMContext):
     """Обработчик команды /start"""
     await state.clear()
@@ -45,7 +48,7 @@ async def send_welcome(message: Message, state: FSMContext):
     )
 
 
-@router.callback_query(CategoryCallback.filter())
+@user_router.callback_query(CategoryCallback.filter())
 async def category_selected(
     callback: CallbackQuery,
     callback_data: CategoryCallback,
@@ -62,30 +65,48 @@ async def category_selected(
         
         subcategories = await get_subcategories(session, category_id)
         
+        products = await get_products_by_category(session, category_id)
+        
         await state.update_data(
             selected_category_id=category_id,
             selected_category_name=category.name
         )
         
-        if not subcategories:
-            markup = await command_keyboard(category_id=category_id)
-            
-            await callback.message.edit_text(
-                f"📂 <b>{category.name}</b>\n\n"
-                "В этой категории пока нет подкатегорий.\n"
-                "Выберите действие:",
-                parse_mode="HTML",
-                reply_markup=markup
-            )
-        else:
+        print(f"[DEBUG] Категория: {category.name}")
+        print(f"[DEBUG] Подкатегорий: {len(subcategories)}")
+        print(f"[DEBUG] Товаров (без подкатегорий): {len(products)}")
+        
+        if subcategories:
             markup = await subcategories_keyboard(
                 subcategories, 
                 category_id=category_id
             )
-            
             await callback.message.edit_text(
                 f"📁 <b>Категория:</b> {category.name}\n\n"
                 "Выберите подкатегорию:",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+
+        elif not subcategories and products:
+            markup = await products_keyboard(
+                products=products,
+                category_id=category_id,  
+                subcategory_id=None       
+            )
+            await callback.message.edit_text(
+                f"📂 <b>Категория:</b> {category.name}\n\n"
+                "Выберите товар:",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+
+        else:
+            markup = await command_keyboard(category_id=category_id)
+            await callback.message.edit_text(
+                f"📂 <b>{category.name}</b>\n\n"
+                "В этой категории пока нет подкатегорий и товаров.\n"
+                "Выберите действие:",
                 parse_mode="HTML",
                 reply_markup=markup
             )
@@ -93,11 +114,11 @@ async def category_selected(
     await callback.answer()
 
 
-@router.callback_query(SubcategoryCallback.filter())
+@user_router.callback_query(SubcategoryCallback.filter())
 async def subcategory_selected(
     callback: CallbackQuery, 
     callback_data: SubcategoryCallback,
-    state: FSMContext
+    state: FSMContext,
 ):
     """Обработчик выбора подкатегории"""
     subcategory_id = callback_data.subcategory_id
@@ -116,15 +137,16 @@ async def subcategory_selected(
             selected_subcategory_name=subcategory.name,
             selected_category_id=subcategory.category_id,
             selected_category_name=category.name if category else "Неизвестно"
-            )
+        )
         
         if not products:
             markup = await command_keyboard(
                 category_id=subcategory.category_id,
-                subcategory_id=subcategory_id
+                subcategory_id=subcategory_id,
+                empty=True
             )
             
-            await callback.message.edit_text(
+            await callback.message.edit_text(  
                 f"📦 <b>Подкатегория:</b> {subcategory.name}\n\n"
                 "В этой подкатегории пока нет товаров.\n"
                 "Выберите действие:",
@@ -132,13 +154,15 @@ async def subcategory_selected(
                 reply_markup=markup
             )
         else:
+            # Есть товары - показываем клавиатуру с товарами в ТОМ ЖЕ окне
             markup = await products_keyboard(
                 products=products,
                 subcategory_id=subcategory_id,
-                category_id=subcategory.category_id)
+                category_id=subcategory.category_id
+            )
             
             category_name = category.name if category else "Неизвестно"
-            await callback.message.edit_text(
+            await callback.message.edit_text(  # ← edit_text вместо answer
                 f"📦 <b>Категория:</b> {category_name}\n"
                 f"📁 <b>Подкатегория:</b> {subcategory.name}\n\n"
                 f"<b>Доступные товары:</b>",
@@ -149,37 +173,52 @@ async def subcategory_selected(
     await callback.answer()
 
 
-@router.callback_query(ProductCallback.filter())
+
+@user_router.callback_query(ProductCallback.filter())
 async def product_selected(
     callback: CallbackQuery, 
     callback_data: ProductCallback, 
-    state: FSMContext):
+    state: FSMContext
+):
     product_id = callback_data.product_id
-
     
     async with AsyncSessionLocal() as session:
-        product = await get_product(session, product_id)
+        stmt = select(Product).where(Product.id == product_id).options(
+            selectinload(Product.images)  
+        )
+        
+        result = await session.execute(stmt)
+        product = result.scalar_one_or_none()
     
     if not product:
-        await callback.message.answer("Товар не найден")
+        await callback.message.answer("❌ Товар не найден")
+        await callback.answer()
         return
     
-    if product.images and len(product.images) > 0:
-        first_image = product.images[0]
-        await callback.message.answer(f"URL фото: {first_image.url}\n{product.name}\n\n{product.short_description}",
-                                      reply_markup=await command_keyboard())
-        
-        await callback.message.answer_photo(
-            photo=first_image.url,
-            caption=f"Тест: {product.name}"
-        )
-    else:
-        await callback.message.answer("Нет фото для этого товара")
+    if product.images:
+        for i in range(0, len(product.images), 10):
+            media_group = []
+            
+            for image in product.images[i:i+10]:
+                if image.url:
+                    media_group.append(InputMediaPhoto(media=image.url))
+
+
+            
+            if media_group:
+                await callback.message.answer_media_group(media=media_group)
+    
+    await callback.message.answer(
+        f"📦 <b>{product.name}</b>\n\n"
+        f"{product.short_description or 'Описание отсутствует'}",
+        parse_mode="HTML",
+        reply_markup=await command_keyboard()
+    )
     
     await callback.answer()
 
 
-@router.callback_query(AskCallback.filter())
+@user_router.callback_query(AskCallback.filter())
 async def ask_question(
     callback: CallbackQuery,
     state: FSMContext
@@ -191,7 +230,7 @@ async def ask_question(
     )
     await callback.answer()
 
-@router.message(QuestionStates.waiting)
+@user_router.message(QuestionStates.waiting)
 async def process_question(
     message: Message,
     state: FSMContext
@@ -206,7 +245,7 @@ async def process_question(
     await state.clear()
 
 
-@router.callback_query(F.data == "request_consultation")
+@user_router.callback_query(F.data == "request_consultation")
 async def request_consultation(callback: CallbackQuery):
     await callback.message.answer(
         "📞 Консультация\n\n"
@@ -216,26 +255,26 @@ async def request_consultation(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "place_order")
+@user_router.callback_query(F.data == "place_order")
 async def start_order(callback: CallbackQuery, state: FSMContext):
     await state.set_state(OrderStates.name)
     await callback.message.answer("🛒 Оформление заказа\n\nЧто вы хотите заказать?")
     await callback.answer()
 
-@router.message(OrderStates.name)
+@user_router.message(OrderStates.name)
 async def order_name(message: Message, state: FSMContext):
     await state.update_data(name=message.text)
     await state.set_state(OrderStates.short_description)
     await message.answer("✏️ Кратко опишите товар или услугу:")
 
-@router.message(OrderStates.short_description)
+@user_router.message(OrderStates.short_description)
 async def order_short_description(message: Message, state: FSMContext):
     await state.update_data(short_description=message.text)
     await state.set_state(OrderStates.additional_info)
     await message.answer("ℹ️ Дополнительная информация (необязательно):")
 
 
-@router.message(OrderStates.additional_info)
+@user_router.message(OrderStates.additional_info)
 async def order_additional_info(message: Message, state: FSMContext):
     await state.update_data(additional_info=message.text)
     await state.set_state(OrderStates.images)
@@ -243,7 +282,7 @@ async def order_additional_info(message: Message, state: FSMContext):
 
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-@router.message(OrderStates.images)
+@user_router.message(OrderStates.images)
 async def order_images(message: Message, state: FSMContext):
     data = await state.get_data()
     images = data.get('images', [])
@@ -294,7 +333,7 @@ async def order_images(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, отправьте фото или нажмите 'Готово'.")
 
 
-@router.callback_query(BackCallback.filter())
+@user_router.callback_query(BackCallback.filter())
 async def back_handler(
     callback: CallbackQuery,
     callback_data: BackCallback,
@@ -326,8 +365,14 @@ async def back_handler(
 
             elif callback_data.to == "products":
                 subcategory = await get_subcategory(session, callback_data.parent_id)
-                products = await get_products(session, callback_data.parent_id)
-                category = await get_category(session, subcategory.category_id)
+
+                if subcategory:
+                    products = await get_products(session, subcategory.id)
+                    category = await get_category(session, subcategory.category_id)
+                else:
+                    category = await get_category(session, callback_data.parent_id)
+                    products = await get_products(session, callback_data.parent_id)
+
 
                 markup = await products_keyboard(
                     products,
@@ -374,65 +419,8 @@ async def back_handler(
         await callback.answer()
 
 
-
-
-@router.callback_query(F.data == "back_to_catalog")
+@user_router.callback_query(F.data == "back_to_catalog")
 async def back_to_catalog_handler(callback: CallbackQuery, state: FSMContext):
     """Обработчик возврата в каталог"""
     await send_welcome(callback.message, state)
     await callback.answer()
-
-
-# @router.callback_query(F.data == "catalog")
-# async def catalog_handler(callback: CallbackQuery, state: FSMContext):
-#     """Обработчик кнопки 'Каталог'"""
-#     await send_welcome(callback.message, state)
-#     await callback.answer()
-
-
-# @router.callback_query(F.data == "main_menu")
-# async def main_menu_handler(callback: CallbackQuery, state: FSMContext):
-#     await state.clear()
-    
-#     markup = await main_menu_keyboard()
-    
-#     await callback.message.edit_text(
-#         "🏠 <b>Главное меню</b>\n\n"
-#         "Выберите действие:",
-#         parse_mode="HTML",
-#         reply_markup=markup
-#     )
-#     await callback.answer()
-
-
-# @router.message(F.text)
-# async def handle_user_question(message: Message, state: FSMContext):
-#     """Обработчик текстовых сообщений (вопросов о товаре)"""
-#     data = await state.get_data()
-    
-#     if 'asking_about_product' in data:
-#         product_id = data['asking_about_product']
-#         product_name = data.get('asking_about_product_name', 'товар')
-        
-#         question_text = message.text
-        
-#         await message.answer(
-#             f"✅ <b>Ваш вопрос получен!</b>\n\n"
-#             f"<b>Товар:</b> {product_name}\n"
-#             f"<b>Ваш вопрос:</b> {question_text}\n\n"
-#             f"Менеджер свяжется с вами в ближайшее время.",
-#             parse_mode="HTML"
-#         )
-        
-#         await state.update_data(
-#             asking_about_product=None,
-#             asking_about_product_name=None
-#         )
-        
-#         markup = await back_to_catalog_keyboard()
-#         await message.answer(
-#             "Хотите продолжить покупки?",
-#             reply_markup=markup
-#         )
-#     else:
-#         await send_welcome(message, state)
