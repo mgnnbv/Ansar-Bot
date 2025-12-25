@@ -16,7 +16,7 @@ from handlers.for_admin_handlers import admin_router
 env = Env()
 env.read_env()
 
-ADMIN_IDS = {'5129105635', 123456789, 987654321}
+ADMIN_IDS = {5129105635, 123456789, 987654321}
 
 class IsUserFilter(Filter):
     def __init__(self, admin_ids: set):
