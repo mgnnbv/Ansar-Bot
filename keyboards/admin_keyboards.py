@@ -30,17 +30,40 @@ def get_edit_product_keyboard():
     builder.adjust(2, 2, 2, 1, 1)
     return builder.as_markup()
 
-def get_image_management_keyboard():
+def get_image_management_keyboard(no_nav: bool = False):
     """Клавиатура управления изображениями"""
+
     builder = InlineKeyboardBuilder()
-    
-    builder.button(text="➕ Добавить изображение", callback_data="add_image")
-    builder.button(text="🗑️ Удалить изображение", callback_data="delete_image")
-    builder.button(text="👁️ Просмотреть изображения", callback_data="view_images")
-    builder.button(text="↩️ Назад к редактированию", callback_data="back_to_edit")
-    
-    builder.adjust(2)
+
+    # Первый ряд — добавить
+    builder.row(
+        InlineKeyboardButton(text="➕ Добавить изображение", callback_data="add_image")
+    )
+
+    # Второй ряд — просмотреть
+    builder.row(
+        InlineKeyboardButton(text="👁️ Просмотреть изображения", callback_data="view_images")
+    )
+
+    # Третий ряд — удалить
+    builder.row(
+        InlineKeyboardButton(text="🗑️ Удалить изображение", callback_data="delete_image")
+    )
+
+    # Четвёртый ряд — навигация, если нужно
+    if not no_nav:
+        builder.row(
+            InlineKeyboardButton(text="◀️", callback_data="img_prev"),
+            InlineKeyboardButton(text="▶️", callback_data="img_next")
+        )
+
+    # Последний ряд — назад
+    builder.row(
+        InlineKeyboardButton(text="↩️ Назад к редактированию", callback_data="back_to_edit")
+    )
+
     return builder.as_markup()
+
 
 def get_cancel_edit_keyboard():
     """Клавиатура отмены редактирования"""
@@ -57,4 +80,21 @@ def get_cancel_keyboard():
     )
     return builder.as_markup()
 
+def back_to_edit_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Вернуться к редактированию",
+                    callback_data="back_to_edit"
+                )
+            ]
+        ]
+    )
 
+def photos_start_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⏭️ Пропустить", callback_data="skip_photos")
+    builder.button(text="❌ Отмена", callback_data="cancel_operation")
+    builder.adjust(1)
+    return builder.as_markup()

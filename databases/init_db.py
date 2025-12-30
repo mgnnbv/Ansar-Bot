@@ -1,7 +1,7 @@
 import asyncio
 
 from engine import engine
-from models import Category, Subcategory, Base, Product, ProductImage
+from models import Category, Subcategory, Base, Product, ProductImage, Order, OrderStatus
 
 async def init_models():
     async with engine.begin() as conn:

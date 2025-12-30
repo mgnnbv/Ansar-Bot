@@ -9,6 +9,8 @@ from aiogram.fsm.state import StatesGroup, State
 
 class OrderStates(StatesGroup):
     name = State()
+    category = State()
+    subcategory = State()
     short_description = State()
     additional_info = State()
     images = State()
@@ -25,27 +27,17 @@ class AddProductStates(StatesGroup):
 
 
 class EditProductStates(StatesGroup):
-    # Поиск товара по названию
     waiting_for_product_name = State()
-    
-    # Выбор из найденных
     waiting_for_product_choice = State()
-    
-    # Основное редактирование
     waiting_for_edit_choice = State()
     waiting_for_name_edit = State()
     waiting_for_short_desc_edit = State()
     waiting_for_additional_info_edit = State()
-    
-    # Категории
     waiting_for_category_edit = State()
     waiting_for_subcategory_edit = State()
-    
-    # Изображения
     waiting_for_image_choice = State()
-    waiting_for_image_url = State()
-    waiting_for_image_to_delete = State()
+    waiting_for_image_upload = State()
+    waiting_for_image_delete = State()
+    waiting_for_final_save = State()
 
-class ManagerReplyStates(StatesGroup):
-    waiting_for_answer = State()
 

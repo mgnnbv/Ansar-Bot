@@ -1,25 +1,28 @@
 from aiogram import Bot, Router, F
-from aiogram.types import Message, CallbackQuery, ContentType, InputMediaPhoto
+from aiogram.types import Message, CallbackQuery, ContentType
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.enums.parse_mode import ParseMode
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select
-from datetime import datetime
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import selectinload
+from aiogram.exceptions import TelegramBadRequest
 
 
-from databases.crud import get_categories, get_subcategories, show_product_list_by_name
+
+from databases.crud import get_categories, get_subcategories, return_to_admin_panel, safe_edit_message, safe_send_media, show_product_list_by_name
 from databases.engine import AsyncSessionLocal
 from databases.models import Category, Product, ProductImage, Subcategory
 from fsm import AddProductStates, EditProductStates
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from keyboards.admin_keyboards import get_admin_keyboard, get_cancel_edit_keyboard, get_cancel_keyboard, get_edit_product_keyboard, get_image_management_keyboard
+
+from keyboards.admin_keyboards import back_to_edit_keyboard, get_admin_keyboard, get_cancel_edit_keyboard, get_cancel_keyboard, get_edit_product_keyboard, get_image_management_keyboard, photos_start_keyboard
+
 
 admin_router = Router()
 
 
+# ========== СТАРТ КОМАННДЫ И ХЕНДЛЕРЫ ==========
 @admin_router.message(CommandStart())
 async def start_cmd(message: Message):
     await message.answer(
@@ -27,6 +30,17 @@ async def start_cmd(message: Message):
         'Нажмите на кнопку, чтобы увидеть ваши команды:',
         reply_markup=get_admin_keyboard()
     )
+
+
+@admin_router.message(Command('main_menu'))
+async def start_cmd(message: Message):
+    await message.answer(
+        '👑 Здравствуйте, менеджер!\n'
+        'Нажмите на кнопку, чтобы увидеть ваши команды:',
+        reply_markup=get_admin_keyboard()
+    )
+
+
 
 @admin_router.message(Command("admin"))
 async def admin_panel(message: Message):
@@ -39,175 +53,189 @@ async def admin_panel(message: Message):
     )
 
 
+@admin_router.callback_query(F.data == "back_to_admin_menu")
+async def back_to_admin_menu_handler(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "👑 <b>Панель администратора</b>\n\nВыберите команду:",
+        reply_markup=get_admin_keyboard(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# ========== ДОБАВЛЕНИЕ ТОВАРА ==========
+
 @admin_router.callback_query(F.data == "admin_add_product")
 async def admin_add_product_handler(callback: CallbackQuery, state: FSMContext):
-    """Обработка добавления товара через кнопку"""
     await state.clear()
-    await callback.message.edit_text(
+
+    text = (
         "📦 <b>Добавление нового товара</b>\n\n"
-        "Введите <b>название товара</b> или нажмите кнопку для отмены:",
-        reply_markup=get_cancel_keyboard(),
-        parse_mode=ParseMode.HTML
+        "Введите <b>название товара</b> или нажмите кнопку для отмены:"
     )
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_cancel_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+    except:
+        await callback.message.answer(
+            text,
+            reply_markup=get_cancel_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+
     await state.set_state(AddProductStates.waiting_for_name)
     await callback.answer()
 
 @admin_router.message(AddProductStates.waiting_for_name)
 async def process_name(message: Message, state: FSMContext):
-    """Обработка названия товара"""
+    if not message.text:
+        return
+
     name = message.text.strip()
+
     if len(name) < 2:
         await message.answer(
-            "❌ Название слишком короткое (минимум 2 символа). Введите еще раз:",
+            "❌ Название слишком короткое (минимум 2 символа).",
             reply_markup=get_cancel_keyboard()
         )
         return
-    
+
     await state.update_data(name=name)
-    
+
     async with AsyncSessionLocal() as session:
         categories = await get_categories(session)
-        
-        builder = InlineKeyboardBuilder()
-        for category in categories:
-            builder.button(
-                text=category.name, 
-                callback_data=f"cat_{category.id}"
-            )
-        
-        builder.button(
-            text="❌ Отменить",
-            callback_data="cancel_operation"
-        )
-        
-        builder.adjust(2)
 
+    if not categories:
         await message.answer(
-            f"✅ <b>Название:</b> {name}\n\n"
-            "Выберите <b>категорию</b>:",
-            reply_markup=builder.as_markup(),
-            parse_mode=ParseMode.HTML
+            "❌ Категории не найдены. Сначала создайте категорию.",
+            reply_markup=get_admin_keyboard()
         )
-        await state.set_state(AddProductStates.waiting_for_category)
-
-@admin_router.callback_query(F.data.startswith("cat_"), AddProductStates.waiting_for_category)
-async def process_category(callback: CallbackQuery, state: FSMContext):
-    """Обработка выбора категории"""
-    category_id_str = callback.data.replace("cat_", "")
-    try:
-        category_id = int(category_id_str)
-    except ValueError:
-        await callback.answer("❌ Ошибка: неверный ID категории")
+        await state.clear()
         return
-    
-    async with AsyncSessionLocal() as session:
-        subcategories = await get_subcategories(session, category_id)
-        await state.update_data(category_id=category_id)
-        
-        builder = InlineKeyboardBuilder()
-        
-        if subcategories:
-            for subcategory in subcategories:
-                builder.button(
-                    text=subcategory.name,
-                    callback_data=f"sub_{subcategory.id}"
-                )
-            builder.button(
-                text="⏭️ Пропустить подкатегорию",
-                callback_data="skip_subcategory"
-            )
-        else:
-            builder.button(
-                text="⏭️ Нет подкатегорий",
-                callback_data="skip_subcategory"
-            )
-        
+
+    builder = InlineKeyboardBuilder()
+    for category in categories:
         builder.button(
-            text="❌ Отменить",
-            callback_data="cancel_operation"
+            text=category.name,
+            callback_data=f"cat_{category.id}"
         )
-        
-        builder.adjust(2)
-        
-        result = await session.execute(select(Category).where(Category.id == category_id))
-        category = result.scalar_one_or_none()
-        category_name = category.name if category else f"Категория #{category_id}"
-        
-        data = await state.get_data()
-        product_name = data.get('name', 'Не указано')
-        
-        await callback.message.edit_text(
-            f"✅ <b>Название:</b> {product_name}\n"
-            f"✅ <b>Категория:</b> {category_name}\n\n"
-            "Выберите <b>подкатегорию</b> или пропустите:",
-            reply_markup=builder.as_markup(),
-            parse_mode=ParseMode.HTML
-        )
-        await state.set_state(AddProductStates.waiting_for_subcategory)
-    await callback.answer()
 
-@admin_router.callback_query(F.data.startswith("sub_"), AddProductStates.waiting_for_subcategory)
-async def process_subcategory(callback: CallbackQuery, state: FSMContext):
-    """Обработка выбора подкатегории"""
-    subcategory_id_str = callback.data.replace("sub_", "")
-    try:
-        subcategory_id = int(subcategory_id_str)
-    except ValueError:
-        await callback.answer("❌ Ошибка: неверный ID подкатегории")
-        return
-    
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Subcategory).where(Subcategory.id == subcategory_id))
-        subcategory = result.scalar_one_or_none()
-        subcategory_name = subcategory.name if subcategory else f"Подкатегория #{subcategory_id}"
-        
-        await state.update_data(subcategory_id=subcategory_id)
-        
-        data = await state.get_data()
-        name = data.get('name', 'Не указано')
-        
-        category_name = "Не указано"
-        if 'category_id' in data:
-            result = await session.execute(select(Category).where(Category.id == data['category_id']))
-            category = result.scalar_one_or_none()
-            if category:
-                category_name = category.name
-        
-        await callback.message.edit_text(
-            f"✅ <b>Название:</b> {name}\n"
-            f"✅ <b>Категория:</b> {category_name}\n"
-            f"✅ <b>Подкатегория:</b> {subcategory_name}\n\n"
-            "Напишите <b>краткое описание</b> товара (минимум 10 символов):",
-            parse_mode=ParseMode.HTML
-        )
-        await state.set_state(AddProductStates.waiting_for_short_description)
-    await callback.answer()
+    builder.button(text="❌ Отменить", callback_data="cancel_operation")
+    builder.adjust(2)
 
-@admin_router.callback_query(F.data == "skip_subcategory", AddProductStates.waiting_for_subcategory)
-async def skip_subcategory(callback: CallbackQuery, state: FSMContext):
-    """Пропуск подкатегории"""
-    await state.update_data(subcategory_id=None)
-    
-    data = await state.get_data()
-    name = data.get('name', 'Не указано')
-    
-    async with AsyncSessionLocal() as session:
-        category_name = "Не указано"
-        if 'category_id' in data:
-            result = await session.execute(select(Category).where(Category.id == data['category_id']))
-            category = result.scalar_one_or_none()
-            if category:
-                category_name = category.name
-    
-    await callback.message.edit_text(
-        f"✅ <b>Название:</b> {name}\n"
-        f"✅ <b>Категория:</b> {category_name}\n"
-        f"✅ <b>Подкатегория:</b> Не выбрана\n\n"
-        "Напишите <b>краткое описание</b> товара (минимум 10 символов):",
+    await message.answer(
+        f"✅ <b>Название:</b> {name}\n\nВыберите <b>категорию</b>:",
+        reply_markup=builder.as_markup(),
         parse_mode=ParseMode.HTML
     )
+
+    await state.set_state(AddProductStates.waiting_for_category)
+
+@admin_router.callback_query(
+    AddProductStates.waiting_for_category,
+    F.data.startswith("cat_")
+)
+async def process_category(callback: CallbackQuery, state: FSMContext):
+    try:
+        category_id = int(callback.data.split("_")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка категории")
+        return
+
+    async with AsyncSessionLocal() as session:
+        category = await session.get(Category, category_id)
+        subcategories = await get_subcategories(session, category_id)
+
+    if not category:
+        await callback.answer("Категория не найдена")
+        return
+
+    await state.update_data(
+        category_id=category.id,
+        category_name=category.name
+    )
+
+    builder = InlineKeyboardBuilder()
+
+    if subcategories:
+        for sub in subcategories:
+            builder.button(text=sub.name, callback_data=f"sub_{sub.id}")
+        builder.button(text="⏭ Пропустить", callback_data="skip_subcategory")
+    else:
+        builder.button(text="⏭ Подкатегорий нет", callback_data="skip_subcategory")
+
+    builder.button(text="❌ Отменить", callback_data="cancel_operation")
+    builder.adjust(2)
+
+    data = await state.get_data()
+
+    await callback.message.edit_text(
+        f"✅ <b>Название:</b> {data['name']}\n"
+        f"✅ <b>Категория:</b> {category.name}\n\n"
+        "Выберите <b>подкатегорию</b>:",
+        reply_markup=builder.as_markup(),
+        parse_mode=ParseMode.HTML
+    )
+
+    await state.set_state(AddProductStates.waiting_for_subcategory)
+    await callback.answer()
+
+@admin_router.callback_query(
+    AddProductStates.waiting_for_subcategory,
+    F.data.startswith("sub_")
+)
+async def process_subcategory(callback: CallbackQuery, state: FSMContext):
+    sub_id = int(callback.data.split("_")[1])
+
+    async with AsyncSessionLocal() as session:
+        sub = await session.get(Subcategory, sub_id)
+
+    if not sub:
+        await callback.answer("Подкатегория не найдена")
+        return
+
+    await state.update_data(
+        subcategory_id=sub.id,
+        subcategory_name=sub.name
+    )
+
+    await go_to_description(callback, state, sub.name)
+
+
+async def go_to_description(callback: CallbackQuery, state: FSMContext, subcategory_name: str):
+    data = await state.get_data()
+
+    await callback.message.edit_text(
+        f"✅ <b>Название:</b> {data['name']}\n"
+        f"✅ <b>Категория:</b> {data['category_name']}\n"
+        f"✅ <b>Подкатегория:</b> {subcategory_name}\n\n"
+        "Введите <b>краткое описание</b> (мин. 10 символов):",
+        parse_mode=ParseMode.HTML
+    )
+
     await state.set_state(AddProductStates.waiting_for_short_description)
     await callback.answer()
+
+@admin_router.callback_query(
+    AddProductStates.waiting_for_subcategory,
+    F.data == "skip_subcategory"
+)
+async def skip_subcategory(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(subcategory_id=None, subcategory_name="Не выбрана")
+    await go_to_description(callback, state, "Не выбрана")
+
+@admin_router.callback_query(
+    AddProductStates.waiting_for_subcategory,
+    F.data == "skip_subcategory"
+)
+async def skip_subcategory(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(subcategory_id=None, subcategory_name="Не выбрана")
+    await go_to_description(callback, state, "Не выбрана")
 
 @admin_router.message(AddProductStates.waiting_for_short_description)
 async def process_short_description(message: Message, state: FSMContext):
@@ -254,113 +282,201 @@ async def process_additional_info(message: Message, state: FSMContext):
         "📌 <b>Инструкция:</b>\n"
         "1. Отправляйте фото по одному\n"
         "2. Первое фото будет главным\n"
-        "3. Минимум 1 фото, максимум 10\n"
-        "4. Когда все фото загружены, нажмите кнопку <b>'Готово'</b>\n\n"
-        "Или /cancel для отмены.",
-        reply_markup=get_cancel_keyboard(),
+        "3. Когда все фото загружены, нажмите кнопку <b>'Готово'</b>\n\n"
+        "Или кнопку /cancel_operation для отмены.",
+        reply_markup=photos_start_keyboard(),
         parse_mode=ParseMode.HTML
     )
     await state.set_state(AddProductStates.waiting_for_photos)
 
-@admin_router.message(AddProductStates.waiting_for_photos, F.content_type == ContentType.PHOTO)
-async def process_photo(message: Message, state: FSMContext, bot: Bot):
-    """Обработка загрузки фото"""
-    photo = message.photo[-1]
-    file_id = photo.file_id
-    
-    file = await bot.get_file(file_id)
-    
+@admin_router.callback_query(
+    F.data.in_({"photos_done", "skip_photos"}),
+    AddProductStates.waiting_for_photos
+)
+async def photos_done_handler(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     photos = data.get("photos", [])
-    
-    if len(photos) >= 10:
-        await message.answer(
-            "❌ Максимум 10 фото.\n"
-            "Нажмите кнопку <b>'Готово'</b> для продолжения.",
-            reply_markup=get_cancel_keyboard(),
+
+    name = data.get("name")
+    short_description = data.get("short_description")
+    additional_info = data.get("additional_info") or "Не указана"
+
+    text = (
+        "📋 <b>Сводка товара</b>\n\n"
+        f"<b>Название:</b> {name}\n"
+        f"<b>Описание:</b> {short_description}\n"
+        f"<b>Доп. информация:</b> {additional_info}\n"
+        f"<b>Фото:</b> {len(photos)} шт.\n\n"
+        "Подтвердить сохранение?"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Сохранить", callback_data="confirm_save")
+    builder.button(text="❌ Отмена", callback_data="cancel_operation")
+    builder.adjust(1)
+
+    if photos:
+        await callback.message.answer_photo(
+            photo=photos[0]["file_id"],
+            caption=text,
+            reply_markup=builder.as_markup()
+        )
+    else:
+        await callback.message.answer(
+            text,
+            reply_markup=builder.as_markup(),
             parse_mode=ParseMode.HTML
         )
+
+    await state.set_state(AddProductStates.waiting_for_final_confirm)
+
+    await callback.answer()
+
+@admin_router.callback_query(
+    F.data == "confirm_save",
+    AddProductStates.waiting_for_final_confirm
+)
+async def save_product(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    photos_data = data.get("photos", [])
+
+    async with AsyncSessionLocal() as session:
+        try:
+            product = Product(
+                name=data["name"],
+                short_description=data.get("short_description"),
+                additional_info=data.get("additional_info", ""),
+                category_id=data.get("category_id"),
+                subcategory_id=data.get("subcategory_id")
+            )
+
+            session.add(product)
+            await session.flush()
+
+            # сохраняем фото (если есть)
+            for photo_info in photos_data:
+                session.add(
+                    ProductImage(
+                        url=photo_info.get("file_id", ""),
+                        product_id=product.id
+                    )
+                )
+
+            await session.commit()
+
+            success_message = (
+                f"✅ <b>Товар успешно сохранен!</b>\n\n"
+                f"<b>ID:</b> {product.id}\n"
+                f"<b>Название:</b> {product.name}\n"
+                f"<b>Фотографий:</b> {len(photos_data)}"
+            )
+
+            if photos_data:
+                await callback.message.edit_caption(
+                    caption=success_message,
+                    reply_markup=None,
+                    parse_mode="HTML"
+                )
+            else:
+                await callback.message.edit_text(
+                    text=success_message,
+                    reply_markup=None,
+                    parse_mode="HTML"
+                )
+
+            await callback.message.answer(
+                "👑 <b>Панель администратора</b>\n\n"
+                "Выберите команду:",
+                reply_markup=get_admin_keyboard(),
+                parse_mode="HTML"
+            )
+
+        except Exception as e:
+            await session.rollback()
+
+            error_text = f"❌ Ошибка при сохранении: {e}"
+
+            if callback.message.caption:
+                await callback.message.edit_caption(error_text)
+            else:
+                await callback.message.edit_text(error_text)
+
+        finally:
+            await state.clear()
+
+    await callback.answer()
+
+
+
+@admin_router.message(
+    AddProductStates.waiting_for_photos,
+    F.content_type != ContentType.PHOTO
+)
+async def photos_only(message: Message):
+    await message.answer(
+        "❌ Сейчас можно отправлять только фотографии.\n"
+        "Когда закончите — нажмите «Готово»."
+    )
+
+
+@admin_router.callback_query(
+    F.data == "photos_done",
+    AddProductStates.waiting_for_photos
+)
+async def photos_done_handler(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    photos = data.get("photos", [])
+
+    if not photos:
+        await callback.answer("❌ Добавьте хотя бы одно фото", show_alert=True)
         return
-    
-    photo_data = {
-        "file_id": file_id,
-        "file_path": file.file_path,
-        "file_unique_id": photo.file_unique_id,
-        "width": photo.width,
-        "height": photo.height,
-        "date": message.date.isoformat()
-    }
-    
-    photos.append(photo_data)
-    await state.update_data(photos=photos)
-    
+
+    name = data.get("name")
+    short_description = data.get("short_description")
+    additional_info = data.get("additional_info") or "Не указана"
+
+    text = (
+        "📋 <b>Сводка товара</b>\n\n"
+        f"<b>Название:</b> {name}\n"
+        f"<b>Описание:</b> {short_description}\n"
+        f"<b>Доп. информация:</b> {additional_info}\n"
+        f"<b>Фото:</b> {len(photos)} шт.\n\n"
+        "Подтвердить сохранение?"
+    )
+
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Готово", callback_data="photos_done")
+    builder.button(text="✅ Сохранить", callback_data="confirm_save")
     builder.button(text="❌ Отменить", callback_data="cancel_operation")
     builder.adjust(1)
-    
-    await message.answer(
-        f"✅ Фото #{len(photos)} добавлено\n"
-        f"📷 Всего фото: {len(photos)} из 10\n\n"
-        "Отправьте еще фото или нажмите <b>'Готово'</b> для продолжения.",
+
+    await callback.message.answer_photo(
+        photo=photos[0]["file_id"],
+        caption=text,
         reply_markup=builder.as_markup(),
         parse_mode=ParseMode.HTML
     )
 
-@admin_router.callback_query(F.data == "photos_done", AddProductStates.waiting_for_photos)
-async def photos_done_handler(callback: CallbackQuery, state: FSMContext):
-    """Завершение загрузки фото через кнопку"""
-    data = await state.get_data()
-    photos = data.get("photos", [])
-    
-    if not photos:
-        await callback.message.edit_text(
-            "❌ Вы не отправили ни одной фотографии.\n"
-            "Отправьте хотя бы одно фото или /cancel для отмены.",
-            reply_markup=get_cancel_keyboard()
-        )
-        return
-    
-    name = data.get('name', 'Не указано')
-    short_description = data.get('short_description', 'Не указано')
-    additional_info = data.get('additional_info', 'Не указано')
-    
-    summary_text = (
-        "📋 <b>Сводка по товару:</b>\n\n"
-        f"<b>Название:</b> {name}\n"
-        f"<b>Краткое описание:</b> {short_description}\n"
-        f"<b>Доп. информация:</b> {additional_info if additional_info else 'Не указана'}\n"
-        f"<b>Количество фото:</b> {len(photos)} шт.\n\n"
-        "<i>Подтвердите сохранение товара:</i>"
-    )
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Сохранить товар", callback_data="confirm_save")
-    builder.button(text="❌ Отменить", callback_data="cancel_operation")
-    builder.adjust(1)
-    
-    if photos:
-        first_photo = photos[0]
-        await callback.message.delete()  
-        
-        await callback.message.answer_photo(
-            photo=first_photo.get("file_id"),
-            caption=summary_text,
-            reply_markup=builder.as_markup(),
-            parse_mode=ParseMode.HTML
-        )
-    
     await state.set_state(AddProductStates.waiting_for_final_confirm)
     await callback.answer()
 
+
 @admin_router.callback_query(F.data == "confirm_save", AddProductStates.waiting_for_final_confirm)
 async def save_product(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Сохранение товара в БД"""
+    """Сохранение товара в БД с проверкой фото"""
     data = await state.get_data()
-    
+    photos_data = data.get("photos", [])
+
+    if not photos_data:
+        await callback.message.edit_text(
+            "❌ Вы не добавили ни одного фото.\n"
+            "Отправьте хотя бы одно фото или /cancel для отмены.",
+            reply_markup=get_cancel_keyboard()
+        )
+        await callback.answer()
+        return
+
     async with AsyncSessionLocal() as session:
         try:
-            # Создаем товар
             product = Product(
                 name=data['name'],
                 short_description=data.get('short_description'),
@@ -368,30 +484,19 @@ async def save_product(callback: CallbackQuery, state: FSMContext, bot: Bot):
                 category_id=data.get('category_id'),
                 subcategory_id=data.get('subcategory_id')
             )
-            
             session.add(product)
             await session.flush()
-            
-            # Сохраняем фото
-            photos_data = data.get("photos", [])
-            
-            for index, photo_info in enumerate(photos_data):
+
+            for photo_info in photos_data:
                 file_id = photo_info.get("file_id", "")
-                file_path = photo_info.get("file_path", "")
-                
-                # Используем поле url вместо telegram_file_id
-                # file_id - это уникальный идентификатор файла в Telegram
-                # Можно использовать его как URL или сохранить отдельно
                 product_image = ProductImage(
-                    url=file_id,  # Сохраняем file_id в поле url
+                    url=file_id,
                     product_id=product.id
-                    # Убрали лишние поля: telegram_file_id, telegram_file_path, cdn_url, is_main, order_index
                 )
                 session.add(product_image)
-            
+
             await session.commit()
-            
-            # Получаем названия категории и подкатегории
+
             category_name = "Не указано"
             if product.category_id:
                 cat_result = await session.execute(
@@ -400,7 +505,7 @@ async def save_product(callback: CallbackQuery, state: FSMContext, bot: Bot):
                 category = cat_result.scalar_one_or_none()
                 if category:
                     category_name = category.name
-            
+
             subcategory_name = "Не указано"
             if product.subcategory_id:
                 subcat_result = await session.execute(
@@ -409,7 +514,7 @@ async def save_product(callback: CallbackQuery, state: FSMContext, bot: Bot):
                 subcategory = subcat_result.scalar_one_or_none()
                 if subcategory:
                     subcategory_name = subcategory.name
-            
+
             success_message = (
                 f"✅ <b>Товар успешно сохранен!</b>\n\n"
                 f"<b>ID:</b> {product.id}\n"
@@ -419,31 +524,34 @@ async def save_product(callback: CallbackQuery, state: FSMContext, bot: Bot):
                 f"<b>Описание:</b> {product.short_description[:50]}...\n"
                 f"<b>Фотографий:</b> {len(photos_data)}"
             )
-            
-            await callback.message.edit_caption(
+
+            first_photo = photos_data[0]
+            await callback.message.delete()
+            await callback.message.answer_photo(
+                photo=first_photo.get("file_id"),
                 caption=success_message,
                 reply_markup=None,
-                parse_mode="HTML"
+                parse_mode=ParseMode.HTML
             )
-            
-            # Возвращаем в админ-панель
             await callback.message.answer(
                 "👑 <b>Панель администратора</b>\n\n"
                 "Выберите команду:",
                 reply_markup=get_admin_keyboard(),
-                parse_mode="HTML"
+                parse_mode=ParseMode.HTML
             )
-            
+
         except Exception as e:
             await session.rollback()
-            await callback.message.edit_caption(
-                caption=f"❌ Ошибка при сохранении: {str(e)}",
-                reply_markup=None
+            await callback.message.answer(
+                f"❌ Ошибка при сохранении товара: {str(e)}"
             )
         finally:
             await state.clear()
-    
+
     await callback.answer()
+
+
+# ========== ИЗМЕНЕНИЕ ТОВАРА ==========
 
 @admin_router.callback_query(F.data == "admin_edit_product")
 async def admin_edit_product_handler(callback: CallbackQuery, state: FSMContext):
@@ -478,7 +586,6 @@ async def process_product_search_by_name(message: Message, state: FSMContext):
         return
     
     async with AsyncSessionLocal() as session:
-        # Ищем товары по частичному совпадению названия
         result = await session.execute(
             select(Product)
             .options(
@@ -488,13 +595,12 @@ async def process_product_search_by_name(message: Message, state: FSMContext):
             )
             .where(Product.name.ilike(f"%{search_name}%"))
             .order_by(Product.name)
-            .limit(15)  # Ограничиваем для удобства
+            .limit(15)  
         )
         
         products = result.scalars().all()
         
         if not products:
-            # Показываем список всех товаров, если поиск не дал результатов
             all_result = await session.execute(
                 select(Product)
                 .options(selectinload(Product.category))
@@ -526,11 +632,9 @@ async def process_product_search_by_name(message: Message, state: FSMContext):
             return
         
         if len(products) == 1:
-            # Если нашли один товар - сразу переходим к редактированию
             product = products[0]
             await show_product_for_edit(message, state, product)
         else:
-            # Если несколько товаров - показываем список для выбора
             await show_product_list_by_name(message, state, products, search_name)  
             
 
@@ -561,7 +665,6 @@ async def show_product_list(message: Message, state: FSMContext, products):
 async def show_product_for_edit(message: Message, state: FSMContext, product):
     """Показ товара для редактирования (упрощенная версия)"""
     async with AsyncSessionLocal() as session:
-        # Загружаем связи
         product = await session.get(
             Product, 
             product.id,
@@ -572,14 +675,11 @@ async def show_product_for_edit(message: Message, state: FSMContext, product):
             ]
         )
         
-        # Сохраняем ID товара в состоянии
         await state.update_data(product_id=product.id)
         
-        # Формируем информацию о товаре
         category_name = product.category.name if product.category else "❌ Не указана"
         subcategory_name = product.subcategory.name if product.subcategory else "❌ Не указана"
         
-        # Обрезаем длинные тексты для отображения
         short_desc = product.short_description
         if short_desc and len(short_desc) > 80:
             short_desc = short_desc[:77] + "..."
@@ -598,7 +698,6 @@ async def show_product_for_edit(message: Message, state: FSMContext, product):
             f"📷 <b>Изображений:</b> {len(product.images)}"
         )
         
-        # Клавиатура для выбора действия
         builder = InlineKeyboardBuilder()
         
         builder.button(text="✏️ Название", callback_data="edit_name")
@@ -611,7 +710,6 @@ async def show_product_for_edit(message: Message, state: FSMContext, product):
         
         builder.adjust(2, 2, 2, 1, 1)
         
-        # Если есть фото - показываем первое
         if product.images:
             first_image = product.images[0]
             try:
@@ -622,7 +720,6 @@ async def show_product_for_edit(message: Message, state: FSMContext, product):
                     parse_mode=ParseMode.HTML
                 )
             except:
-                # Если не удалось показать фото
                 await message.answer(
                     product_info + f"\n\n⚠️ <i>Не удалось загрузить изображение</i>",
                     reply_markup=builder.as_markup(),
@@ -666,66 +763,69 @@ async def select_product_handler(callback: CallbackQuery, state: FSMContext):
     
     await callback.answer()
 
+
 # ========== ВЫБОР ПОЛЯ ДЛЯ РЕДАКТИРОВАНИЯ ==========
+
 @admin_router.callback_query(F.data.startswith("edit_"), EditProductStates.waiting_for_edit_choice)
 async def edit_field_choice(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора поля для редактирования"""
+
     action = callback.data
-    
     data = await state.get_data()
     product_id = data.get('product_id')
-    
+
     if not product_id:
-        await callback.answer("❌ Ошибка: товар не найден в сессии")
+        await callback.answer("❌ Ошибка: товар не найден в сессии", show_alert=True)
         return
-    
+
     async with AsyncSessionLocal() as session:
         product = await session.get(Product, product_id)
-        
+
         if not product:
-            await callback.message.edit_text(
-                "❌ Товар не найден в базе данных",
-                reply_markup=get_cancel_edit_keyboard()
-            )
+            text = "❌ Товар не найден в базе данных"
+            # Если можно редактировать текст — edit_text, иначе создаём новое сообщение
+            if callback.message.text is not None or callback.message.caption is not None:
+                await callback.message.edit_text(text, reply_markup=get_cancel_edit_keyboard())
+            else:
+                await callback.message.answer(text, reply_markup=get_cancel_edit_keyboard())
             return
-        
+
+        # --------------------- Редактирование названия ---------------------
         if action == "edit_name":
-            await callback.message.edit_text(
-                f"✏️ <b>Редактирование названия</b>\n\n"
-                f"Текущее название: <b>{product.name}</b>\n\n"
-                "Введите новое название:",
-                reply_markup=get_cancel_edit_keyboard(),
-                parse_mode=ParseMode.HTML
-            )
             await state.set_state(EditProductStates.waiting_for_name_edit)
-            
+            await safe_edit_message(
+                callback.message,
+                f"✏️ <b>Редактирование названия</b>\n\n"
+                f"Текущее название:\n<b>{product.name}</b>\n\n"
+                "Введите новое название:",
+                get_cancel_edit_keyboard()
+            )
+
+        # --------------------- Редактирование короткого описания ---------------------
         elif action == "edit_short_desc":
-            current_desc = product.short_description or "Не указано"
-            await callback.message.edit_text(
-                f"📝 <b>Редактирование описания</b>\n\n"
-                f"Текущее описание: {current_desc}\n\n"
-                "Введите новое краткое описание:",
-                reply_markup=get_cancel_edit_keyboard(),
-                parse_mode=ParseMode.HTML
-            )
             await state.set_state(EditProductStates.waiting_for_short_desc_edit)
-            
-        elif action == "edit_add_info":
-            current_info = product.additional_info or "Не указана"
-            await callback.message.edit_text(
-                f"ℹ️ <b>Редактирование дополнительной информации</b>\n\n"
-                f"Текущая информация: {current_info}\n\n"
-                "Введите новую дополнительную информацию:\n"
-                "(или напишите 'нет', чтобы очистить)",
-                reply_markup=get_cancel_edit_keyboard(),
-                parse_mode=ParseMode.HTML
+            await safe_edit_message(
+                callback.message,
+                f"📝 <b>Редактирование описания</b>\n\n"
+                f"{product.short_description or '❌ Не указано'}\n\n"
+                "Введите новое описание:"
             )
+
+        # --------------------- Редактирование дополнительной информации ---------------------
+        elif action == "edit_add_info":
             await state.set_state(EditProductStates.waiting_for_additional_info_edit)
-            
+            await safe_edit_message(
+                callback.message,
+                f"ℹ️ <b>Редактирование доп. информации</b>\n\n"
+                f"{product.additional_info or '❌ Не указана'}\n\n"
+                "Введите новую информацию:",
+                get_cancel_edit_keyboard()
+            )
+
+        # --------------------- Редактирование категории ---------------------
         elif action == "edit_category":
-            # Показываем список категорий
             categories = await get_categories(session)
-            
+
             builder = InlineKeyboardBuilder()
             for category in categories:
                 builder.button(
@@ -734,30 +834,42 @@ async def edit_field_choice(callback: CallbackQuery, state: FSMContext):
                 )
             builder.button(text="↩️ Назад", callback_data="back_to_edit")
             builder.adjust(2)
-            
-            await callback.message.edit_text(
-                "📁 <b>Выбор категории</b>\n\n"
-                "Выберите новую категорию:",
+
+            await callback.message.answer(
+                "📁 <b>Выбор категории</b>\n\nВыберите новую категорию:",
                 reply_markup=builder.as_markup(),
                 parse_mode=ParseMode.HTML
             )
+
             await state.set_state(EditProductStates.waiting_for_category_edit)
-            
+            await callback.answer()
+            return
+
+
+        # --------------------- Управление изображениями ---------------------
         elif action == "edit_images":
-            await callback.message.edit_text(
-                "🖼️ <b>Управление изображениями</b>\n\n"
-                "Выберите действие:",
-                reply_markup=get_image_management_keyboard(),
-                parse_mode=ParseMode.HTML
-            )
+            keyboard = get_image_management_keyboard()
+            text = "🖼️ <b>Управление изображениями</b>\n\nВыберите действие:"
+
+            await safe_edit_message(callback.message, text, keyboard)
+
+
             await state.set_state(EditProductStates.waiting_for_image_choice)
-            
+            await callback.answer()
+            return
+
+
+        # --------------------- Просмотр товара ---------------------
         elif action == "view_product":
             await show_product_for_edit(callback.message, state, product)
-    
+            await callback.answer()
+            return
+
     await callback.answer()
 
+
 # ========== РЕДАКТИРОВАНИЕ ТЕКСТОВЫХ ПОЛЕЙ ==========
+
 @admin_router.message(EditProductStates.waiting_for_name_edit)
 async def process_name_edit(message: Message, state: FSMContext):
     """Обработка нового названия"""
@@ -784,7 +896,6 @@ async def process_name_edit(message: Message, state: FSMContext):
                 parse_mode=ParseMode.HTML
             )
             
-        # Показываем меню редактирования снова
         await show_product_for_edit(message, state, product)
         await state.set_state(EditProductStates.waiting_for_edit_choice)
 
@@ -848,6 +959,7 @@ async def process_additional_info_edit(message: Message, state: FSMContext):
         await show_product_for_edit(message, state, product)
         await state.set_state(EditProductStates.waiting_for_edit_choice)
 
+
 # ========== РЕДАКТИРОВАНИЕ КАТЕГОРИЙ ==========
 @admin_router.callback_query(F.data.startswith("edit_cat_"), EditProductStates.waiting_for_category_edit)
 async def process_category_edit(callback: CallbackQuery, state: FSMContext):
@@ -864,7 +976,6 @@ async def process_category_edit(callback: CallbackQuery, state: FSMContext):
     product_id = data.get('product_id')
     
     async with AsyncSessionLocal() as session:
-        # Получаем подкатегории для выбранной категории
         subcategories = await get_subcategories(session, category_id)
         
         builder = InlineKeyboardBuilder()
@@ -891,7 +1002,6 @@ async def process_category_edit(callback: CallbackQuery, state: FSMContext):
             parse_mode=ParseMode.HTML
         )
         
-        # Сохраняем временные данные
         await state.update_data(temp_category_id=category_id)
         await state.set_state(EditProductStates.waiting_for_subcategory_edit)
     
@@ -945,7 +1055,7 @@ async def skip_subcategory_edit(callback: CallbackQuery, state: FSMContext):
         product = await session.get(Product, product_id)
         if product:
             product.category_id = category_id
-            product.subcategory_id = None  # Очищаем подкатегорию
+            product.subcategory_id = None  
             await session.commit()
             
             category = await session.get(Category, category_id)
@@ -962,189 +1072,326 @@ async def skip_subcategory_edit(callback: CallbackQuery, state: FSMContext):
     
     await callback.answer()
 
+
+# ========== СТАТИСТИКА ТОВАРОВ ==========
+
+@admin_router.callback_query(F.data == "admin_stats")
+async def admin_stats_handler(callback: CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        categories_count = await session.scalar(
+            select(func.count(Category.id))
+        )
+        subcategories_count = await session.scalar(
+            select(func.count(Subcategory.id))
+        )
+        products_count = await session.scalar(
+            select(func.count(Product.id))
+        )
+
+    text = (
+        "📊 <b>Статистика магазина</b>\n\n"
+        f"📁 Категорий: <b>{categories_count}</b>\n"
+        f"🗂️ Подкатегорий: <b>{subcategories_count}</b>\n"
+        f"📦 Товаров: <b>{products_count}</b>"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="↩️ Назад в меню", callback_data="back_to_admin_menu")
+    builder.adjust(1)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# ========== УДАЛЕНИЕ ТОВАРА ==========
+
+@admin_router.callback_query(F.data == "admin_delete_product")
+async def show_product_list_for_delete(callback: CallbackQuery, state: FSMContext):
+    """Показ списка товаров для удаления"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Product))
+        products = result.scalars().all()
+
+    if not products:
+        await callback.message.answer("❌ Товаров для удаления нет")
+        return
+
+    builder = InlineKeyboardBuilder()
+
+    for product in products:
+        builder.button(
+            text=f"id({product.id}): {product.name[:30]}",
+            callback_data=f"delete_product_{product.id}"
+        )
+
+    builder.button(text="❌ Отменить", callback_data="cancel_operation")
+    builder.adjust(1)
+
+    products_text = "\n".join([f"{p.id}: {p.name}" for p in products])
+
+    await callback.message.answer(
+        f"🔍 <b>Найдено товаров:</b> {len(products)}\n\n"
+        f"{products_text}\n\n"
+        "Выберите и напишите товар для удаления:",
+        parse_mode=ParseMode.HTML
+    )
+
+@admin_router.message(F.text)
+async def delete_product_by_name(message: Message, state: FSMContext):
+    text = message.text.strip()
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Product).where(Product.name.ilike(f"%{text}%"))
+        )
+        products = result.scalars().all()
+
+    if not products:
+        await message.answer("❌ Товар не найден. Попробуйте ещё раз или /cancel.")
+        return
+
+    product = products[0]  
+    await state.update_data(product_id=product.id)
+    await state.set_state("waiting_for_delete_confirmation")  
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, удалить", callback_data="delete_product_confirmed")
+    builder.button(text="❌ Отмена", callback_data="cancel_operation")
+    builder.adjust(1)
+
+    print("FSM state перед кнопкой:", await state.get_state())  
+
+    await message.answer(
+        f"⚠️ Вы уверены, что хотите удалить товар <b>{product.name}</b>?\n"
+        "Это действие нельзя отменить.",
+        reply_markup=builder.as_markup(),
+        parse_mode=ParseMode.HTML
+    )
+
+@admin_router.callback_query(F.data == "delete_product_confirmed")
+async def delete_product_confirm(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    product_id = data.get("product_id")
+
+    if not product_id:
+        await callback.answer("❌ Товар не найден", show_alert=True)
+        return
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(ProductImage).where(ProductImage.product_id == product_id))
+        await session.execute(delete(Product).where(Product.id == product_id))
+        await session.commit()
+
+    await callback.message.answer("🗑️ Товар успешно удалён")
+    await callback.message.answer(
+        "👑 Панель администратора",
+        reply_markup=get_admin_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+
+    await state.clear()
+    await callback.answer()
+
+
 # ========== УПРАВЛЕНИЕ ИЗОБРАЖЕНИЯМИ ==========
-@admin_router.callback_query(F.data == "add_image", EditProductStates.waiting_for_image_choice)
+
+@admin_router.callback_query(
+    F.data == "add_image",
+    EditProductStates.waiting_for_image_choice
+)
 async def add_image_handler(callback: CallbackQuery, state: FSMContext):
-    """Добавление нового изображения"""
     await callback.message.edit_text(
         "➕ <b>Добавление изображения</b>\n\n"
-        "Отправьте фото товара (как файл или фото) или введите URL изображения:",
+        "Отправьте фото (как фото или файл) либо URL:",
         reply_markup=get_cancel_edit_keyboard(),
         parse_mode=ParseMode.HTML
     )
-    await state.set_state(EditProductStates.waiting_for_image_url)
 
-@admin_router.message(EditProductStates.waiting_for_image_url, F.content_type == ContentType.PHOTO)
-async def process_image_photo(message: Message, state: FSMContext, bot: Bot):
-    """Обработка фото для добавления"""
-    photo = message.photo[-1]
-    file_id = photo.file_id
-    
+    await state.set_state(EditProductStates.waiting_for_image_upload)
+    await callback.answer()
+
+
+@admin_router.message(
+    EditProductStates.waiting_for_image_upload,
+    F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT})
+)
+async def process_image_photo(message: Message, state: FSMContext):
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    else:
+        if not message.document.mime_type.startswith("image/"):
+            await message.answer("❌ Файл должен быть изображением")
+            return
+        file_id = message.document.file_id
+
     data = await state.get_data()
-    product_id = data.get('product_id')
-    
-    async with AsyncSessionLocal() as session:
-        # Создаем запись в product_images
-        product_image = ProductImage(
-            url=file_id,
-            product_id=product_id
-        )
-        session.add(product_image)
-        await session.commit()
-        
-        await message.answer(
-            "✅ Изображение добавлено!",
-            reply_markup=get_image_management_keyboard()
-        )
-        
-        await state.set_state(EditProductStates.waiting_for_image_choice)
+    product_id = data.get("product_id")
 
-@admin_router.message(EditProductStates.waiting_for_image_url, F.content_type == ContentType.TEXT)
+    async with AsyncSessionLocal() as session:
+        session.add(ProductImage(url=file_id, product_id=product_id))
+        await session.commit()
+
+    await message.answer(
+        "✅ Изображение добавлено",
+        reply_markup=get_image_management_keyboard()
+    )
+
+    await state.set_state(EditProductStates.waiting_for_image_choice)
+
+@admin_router.message(
+    EditProductStates.waiting_for_image_upload,
+    F.content_type == ContentType.TEXT
+)
 async def process_image_url(message: Message, state: FSMContext):
-    """Обработка URL изображения"""
     url = message.text.strip()
-    
-    if not url.startswith(('http://', 'https://')):
+
+    if not url.startswith(("http://", "https://")):
         await message.answer(
-            "❌ Неверный URL. Должен начинаться с http:// или https://\n"
-            "Попробуйте еще раз:",
+            "❌ URL должен начинаться с http:// или https://",
             reply_markup=get_cancel_edit_keyboard()
         )
         return
-    
-    data = await state.get_data()
-    product_id = data.get('product_id')
-    
-    async with AsyncSessionLocal() as session:
-        product_image = ProductImage(
-            url=url,
-            product_id=product_id
-        )
-        session.add(product_image)
-        await session.commit()
-        
-        await message.answer(
-            "✅ Изображение добавлено по URL!",
-            reply_markup=get_image_management_keyboard()
-        )
-        
-        await state.set_state(EditProductStates.waiting_for_image_choice)
 
-@admin_router.callback_query(F.data == "delete_image", EditProductStates.waiting_for_image_choice)
-async def delete_image_handler(callback: CallbackQuery, state: FSMContext):
-    """Удаление изображения"""
     data = await state.get_data()
-    product_id = data.get('product_id')
-    
+    product_id = data.get("product_id")
+
+    async with AsyncSessionLocal() as session:
+        session.add(ProductImage(url=url, product_id=product_id))
+        await session.commit()
+
+    await message.answer(
+        "✅ Изображение добавлено по URL",
+        reply_markup=get_image_management_keyboard()
+    )
+
+    await state.set_state(EditProductStates.waiting_for_image_choice)
+
+@admin_router.callback_query(
+    F.data == "delete_image",
+    EditProductStates.waiting_for_image_choice
+)
+async def delete_image_handler(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    product_id = data.get("product_id")
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(ProductImage).where(ProductImage.product_id == product_id)
+            select(ProductImage)
+            .where(ProductImage.product_id == product_id)
+            .order_by(ProductImage.id)
         )
         images = result.scalars().all()
-        
-        if not images:
-            await callback.message.edit_text(
-                "❌ У товара нет изображений для удаления",
-                reply_markup=get_image_management_keyboard()
-            )
-            return
-        
-        builder = InlineKeyboardBuilder()
-        
-        for img in images:
-            builder.button(
-                text=f"🗑️ Изображение {img.id}",
-                callback_data=f"delete_img_{img.id}"
-            )
-        
-        builder.button(text="↩️ Назад", callback_data="back_to_images")
-        builder.adjust(1)
-        
-        await callback.message.edit_text(
-            f"🗑️ <b>Удаление изображения</b>\n\n"
-            f"Всего изображений: {len(images)}\n"
-            "Выберите изображение для удаления:",
-            reply_markup=builder.as_markup(),
-            parse_mode=ParseMode.HTML
-        )
-        
-        await state.set_state(EditProductStates.waiting_for_image_to_delete)
 
-@admin_router.callback_query(F.data.startswith("delete_img_"), EditProductStates.waiting_for_image_to_delete)
-async def process_image_delete(callback: CallbackQuery, state: FSMContext):
-    """Обработка удаления изображения"""
-    image_id_str = callback.data.replace("delete_img_", "")
-    
-    try:
-        image_id = int(image_id_str)
-    except ValueError:
-        await callback.answer("❌ Ошибка: неверный ID изображения")
-        return
-    
-    async with AsyncSessionLocal() as session:
-        # Удаляем изображение
-        await session.execute(
-            delete(ProductImage).where(ProductImage.id == image_id)
-        )
-        await session.commit()
-        
+    if not images:
         await callback.message.edit_text(
-            f"✅ Изображение #{image_id} удалено!",
+            "❌ У товара нет изображений для удаления",
             reply_markup=get_image_management_keyboard()
         )
-        
-        await state.set_state(EditProductStates.waiting_for_image_choice)
-    
+        await callback.answer()
+        return
+
+    builder = InlineKeyboardBuilder()
+
+    for img in images:
+        builder.button(
+            text=f"🗑️ ID {img.id}",
+            callback_data=f"delete_img_{img.id}"
+        )
+
+    builder.button(text="↩️ Назад", callback_data="back_to_images")
+    builder.adjust(1)
+
+    await callback.message.edit_text(
+        "🗑️ <b>Удаление изображения</b>\n\n"
+        f"Всего изображений: {len(images)}\n"
+        "Выберите изображение:",
+        reply_markup=builder.as_markup(),
+        parse_mode=ParseMode.HTML
+    )
+
+    await state.set_state(EditProductStates.waiting_for_image_delete)
     await callback.answer()
 
-@admin_router.callback_query(F.data == "view_images", EditProductStates.waiting_for_image_choice)
-async def view_images_handler(callback: CallbackQuery, state: FSMContext):
-    """Просмотр всех изображений товара"""
+@admin_router.callback_query(
+    F.data.startswith("delete_img_"),
+    EditProductStates.waiting_for_image_delete
+)
+async def process_image_delete(callback: CallbackQuery, state: FSMContext):
+    image_id_str = callback.data.removeprefix("delete_img_")
+
+    if not image_id_str.isdigit():
+        await callback.answer("❌ Неверный ID")
+        return
+
+    image_id = int(image_id_str)
+
     data = await state.get_data()
-    product_id = data.get('product_id')
-    
+    product_id = data.get("product_id")
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(ProductImage).where(ProductImage.product_id == product_id)
+            delete(ProductImage).where(
+                ProductImage.id == image_id,
+                ProductImage.product_id == product_id
+            )
+        )
+        await session.commit()
+
+    if result.rowcount == 0:
+        await callback.answer("❌ Изображение не найдено")
+        return
+
+    await callback.message.edit_text(
+        f"✅ Изображение #{image_id} удалено",
+        reply_markup=get_image_management_keyboard()
+    )
+
+    await state.set_state(EditProductStates.waiting_for_image_choice)
+    await callback.answer()
+
+@admin_router.callback_query(
+    F.data == "view_images",
+    EditProductStates.waiting_for_image_choice
+)
+async def view_images_handler(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    product_id = data.get("product_id")
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(ProductImage)
+            .where(ProductImage.product_id == product_id)
+            .order_by(ProductImage.id)
         )
         images = result.scalars().all()
-        
-        if not images:
-            await callback.message.edit_text(
-                "📷 У товара нет изображений",
-                reply_markup=get_image_management_keyboard()
-            )
-            return
-        
-        if len(images) == 1:
-            # Если одно изображение
-            await callback.message.edit_media(
-                InputMediaPhoto(
-                    media=images[0].url,
-                    caption=f"📷 Изображение 1 из {len(images)}\nID: {images[0].id}"
-                ),
-                reply_markup=get_image_management_keyboard()
-            )
-        else:
-            # Если несколько изображений - создаем медиагруппу
-            media = []
-            for i, img in enumerate(images, 1):
-                media.append(InputMediaPhoto(
-                    media=img.url,
-                    caption=f"📷 Изображение {i} из {len(images)}\nID: {img.id}" if i == 1 else ""
-                ))
-            
-            await callback.message.delete()
-            await callback.message.answer_media_group(media)
-            
-            await callback.message.answer(
-                f"📷 Всего изображений: {len(images)}",
-                reply_markup=get_image_management_keyboard()
-            )
-    
+
+    if not images:
+        await callback.answer("❌ У товара нет изображений", show_alert=True)
+        return
+
+    for i, image in enumerate(images, start=1):
+        await safe_send_media(
+            bot=callback.bot,
+            chat_id=callback.message.chat.id,
+            media=image.url,
+            caption=f"📷 {i} из {len(images)}\nID: {image.id}",
+            reply_markup=None   # ✅ ВАЖНО
+        )
+
+    await callback.message.answer(
+        "⬅️ Вернуться к редактированию товара",
+        reply_markup=back_to_edit_keyboard()
+    )
+
     await callback.answer()
 
 # ========== НАВИГАЦИОННЫЕ КНОПКИ ==========
+
 @admin_router.callback_query(F.data == "back_to_edit")
 async def back_to_edit_handler(callback: CallbackQuery, state: FSMContext):
     """Возврат к меню редактирования"""
@@ -1175,21 +1422,28 @@ async def back_to_images_handler(callback: CallbackQuery, state: FSMContext):
 async def finish_edit_handler(callback: CallbackQuery, state: FSMContext):
     """Завершение редактирования"""
     await state.clear()
+
+    text = "✅ <b>Редактирование завершено!</b>\n\nТовар успешно обновлен."
     
-    await callback.message.edit_text(
-        "✅ <b>Редактирование завершено!</b>\n\n"
-        "Товар успешно обновлен.",
-        parse_mode=ParseMode.HTML
-    )
-    
-    # Возвращаем в админ-панель
+    try:
+        if callback.message.text:
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML)
+        elif callback.message.caption and (callback.message.photo or callback.message.video or callback.message.document):
+            await callback.message.edit_caption(text, parse_mode=ParseMode.HTML)
+        else:
+            await callback.message.answer(text, parse_mode=ParseMode.HTML)
+    except TelegramBadRequest:
+        await callback.message.answer(text, parse_mode=ParseMode.HTML)
+
     await callback.message.answer(
-        "👑 <b>Панель администратора</b>\n\n"
-        "Выберите команду:",
+        "👑 <b>Панель администратора</b>\n\nВыберите команду:",
         reply_markup=get_admin_keyboard(),
         parse_mode=ParseMode.HTML
     )
+
     await callback.answer()
+
+
 
 @admin_router.callback_query(F.data == "cancel_edit")
 async def cancel_edit_handler(callback: CallbackQuery, state: FSMContext):
@@ -1212,26 +1466,50 @@ async def cancel_edit_handler(callback: CallbackQuery, state: FSMContext):
 
 @admin_router.callback_query(F.data == "cancel_operation")
 async def cancel_operation_handler(callback: CallbackQuery, state: FSMContext):
-    """Отмена операции"""
     await state.clear()
+
     await callback.message.edit_text(
-        "❌ Операция отменена.\n\n"
-        "Возвращаю в админ-панель..."
+        "❌ <b>Операция отменена</b>",
+        parse_mode=ParseMode.HTML
     )
+
+    await return_to_admin_panel(callback.message)
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data == "cancel")
+async def cancel_callback_handler(callback: CallbackQuery, state: FSMContext):
+    """Отмена любой операции через кнопку"""
+    await state.clear()
+
+    if callback.message.text or callback.message.caption:
+        await callback.message.edit_text(
+            "❌ <b>Операция отменена</b>",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await callback.message.answer(
+            "❌ <b>Операция отменена</b>",
+            parse_mode=ParseMode.HTML
+        )
+
     await callback.message.answer(
-        "👑 <b>Панель администратора</b>\n\n"
-        "Выберите команду:",
+        "👑 <b>Панель администратора</b>\n\nВыберите команду:",
         reply_markup=get_admin_keyboard(),
-        parse_mode="HTML"
+        parse_mode=ParseMode.HTML
     )
     await callback.answer()
 
-@admin_router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
-    """Команда отмены"""
-    await state.clear()
-    await message.answer(
-        "❌ Операция отменена.\n\n"
-        "Возвращаю в админ-панель...",
-        reply_markup=get_admin_keyboard()
+
+
+@admin_router.callback_query(
+    F.data == "back_to_edit",
+    EditProductStates.waiting_for_image_choice
+)
+async def back_to_edit_handler(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer(
+        "✏️ Редактирование изображений товара:",
+        reply_markup=get_image_management_keyboard()
     )
+    await callback.answer()
+

@@ -1,4 +1,6 @@
-from sqlalchemy import Float, ForeignKey, String, Text
+from datetime import datetime
+import enum
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm import DeclarativeBase
 
@@ -82,3 +84,33 @@ class ProductImage(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
 
     product: Mapped["Product"] = relationship(back_populates="images")
+
+
+class OrderStatus(enum.Enum):
+    NEW = "new"  # Новый заказ
+    IN_PROGRESS = "in_progress"  # В работе
+    COMPLETED = "completed"  # Завершенный заказ
+    CANCELLED = "cancelled"  # Отмененный
+
+class Order(Base):
+    __tablename__ = "orders"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    
+    # Информация о товаре (копируем из Product)
+    product_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    product_description: Mapped[str] = mapped_column(Text, nullable=True)
+    product_info: Mapped[str] = mapped_column(Text, nullable=True)
+    
+    # Информация о клиенте
+    customer_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    customer_phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    
+    # Даты и статус
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.NEW)
+    notes: Mapped[str] = mapped_column(Text, nullable=True)  # Примечания менеджера
+    
+    # Фото товара (можем сохранить file_id или ссылки)
+    product_images: Mapped[str] = mapped_column(Text, nullable=True)

@@ -1,12 +1,10 @@
-from typing import Optional
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardButton
 from databases.crud import get_categories
 from handlers.callbacks import (
-    BackCallback, ProductCallback, ProductDetailCallback, 
-    SubcategoryCallback, CategoryCallback, AskCallback)
+    BackCallback, ProductCallback, SubcategoryCallback,
+    CategoryCallback, AskCallback)
 
 MANAGER_USERNAME = "mgnnbv"
 
@@ -36,7 +34,7 @@ async def categories_keyboard(
 
 async def subcategories_keyboard(
     subcategories, 
-    category_id: int,  # ← Этот параметр уже есть!
+    category_id: int,  
     row_amount: int = 1) -> InlineKeyboardMarkup:
     """Клавиатура с подкатегориями"""
     builder = InlineKeyboardBuilder()
@@ -73,25 +71,24 @@ async def products_keyboard(
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
-    if products:  # ✅ ТОЛЬКО если есть товары
+    if products:  
         for product in products:
             builder.button(
                 text=f"📦 {product.name}",
                 callback_data=ProductCallback(product_id=product.id).pack()
             )
-    else:  # ✅ Если товаров нет - показываем сообщение
+    else:  
         builder.button(
             text="Товаров пока нет",
             callback_data="no_products"
         )
     
-    # Кнопка "Назад"
     if subcategory_id and category_id:
         builder.button(
             text="⬅️ Назад",
             callback_data=BackCallback(
                 to="subcategories",
-                parent_id=category_id  # Возвращаемся в подкатегории категории
+                parent_id=category_id  
             ).pack()
         )
     elif category_id:
@@ -107,9 +104,8 @@ async def products_keyboard(
             callback_data=BackCallback(to="categories").pack()
         )
     
-    builder.adjust(row_amount, 1)  # Товары по 1 в ряд, потом кнопка "Назад"
+    builder.adjust(row_amount, 1)  
     return builder.as_markup()
-
 
 
 async def command_keyboard(
@@ -172,14 +168,18 @@ async def command_keyboard(
     return builder.as_markup()
 
 
-
 async def consultation_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура с ссылкой на чат менеджера."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                    text="💬 Перейти в чат с менеджером",
-                    url=f"https://t.me/{MANAGER_USERNAME}")]])
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(
+        text="💬 Перейти в чат с менеджером",
+        url=f"https://t.me/{MANAGER_USERNAME}"
+    )
+    
+    builder.adjust(1)  
+    
+    return builder.as_markup()
 
 
 def back_to_catalog_keyboard() -> InlineKeyboardMarkup:

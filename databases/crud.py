@@ -1,17 +1,22 @@
-import asyncio
 from typing import List
+from aiogram import Bot
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.enums.parse_mode import ParseMode
+
 
 from databases.engine import AsyncSessionLocal
 from fsm import EditProductStates
+from keyboards.admin_keyboards import get_admin_keyboard
 
 from .models import Category, Subcategory, Product
+
 
 
 async def get_categories(session: AsyncSession) -> list[Category]:
@@ -70,7 +75,6 @@ async def get_product(session: AsyncSession, product_id: int) -> Product | None:
     return result.scalars().first()
 
 
-
 async def search_products(session: AsyncSession, search_term: str) -> list[Product]:
     """Поиск товаров по названию"""
     result = await session.execute(
@@ -104,7 +108,7 @@ async def get_products_by_category(session: AsyncSession, category_id: int) -> l
         select(Product)
         .where(
             (Product.category_id == category_id) &
-            (Product.subcategory_id == None)  # ← Только товары БЕЗ подкатегорий
+            (Product.subcategory_id == None)  
         )
         .options(selectinload(Product.images))
     )
@@ -112,13 +116,11 @@ async def get_products_by_category(session: AsyncSession, category_id: int) -> l
     return result.scalars().all()
 
 
-
 async def show_product_list_by_name(message: Message, state: FSMContext, products, search_query):
     """Показ списка найденных товаров"""
     builder = InlineKeyboardBuilder()
     
     for product in products:
-        # Формируем текст кнопки
         category_name = product.category.name if product.category else "Без кат."
         images_count = len(product.images)
         
@@ -131,20 +133,17 @@ async def show_product_list_by_name(message: Message, state: FSMContext, product
             callback_data=f"select_product_{product.id}"
         )
         
-        # Дополнительная информация под кнопкой
         builder.button(
             text=f"📁 {category_name} | 📷 {images_count}",
             callback_data=f"info_{product.id}"
         )
     
-    # Навигационные кнопки
     builder.button(text="🔍 Новый поиск", callback_data="new_search_name")
     builder.button(text="📋 Показать все товары", callback_data="show_all_products")
     builder.button(text="❌ Отменить", callback_data="cancel_edit")
     
-    builder.adjust(1, 2, 2, 1)  # Настраиваем расположение
+    builder.adjust(1, 2, 2, 1)  
     
-    # Формируем текст сообщения
     found_text = f"🔍 <b>Найдено товаров:</b> {len(products)} по запросу '<code>{search_query}</code>'"
     
     await message.answer(
@@ -153,3 +152,72 @@ async def show_product_list_by_name(message: Message, state: FSMContext, product
         parse_mode=BaseModel.HTML
     )
     await state.set_state(EditProductStates.waiting_for_product_choice)
+
+
+async def safe_send_media(
+    bot: Bot,
+    chat_id: int,
+    media: str,
+    caption: str,
+    reply_markup: InlineKeyboardMarkup
+):
+    if media.startswith(("http://", "https://")):
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=media,
+            caption=caption,
+            reply_markup=reply_markup
+        )
+
+    try:
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=media,
+            caption=caption,
+            reply_markup=reply_markup
+        )
+    except TelegramBadRequest:
+        return await bot.send_document(
+            chat_id=chat_id,
+            document=media,
+            caption=caption,
+            reply_markup=reply_markup
+        )
+
+
+async def safe_edit_message(
+    message: Message,
+    text: str,
+    reply_markup=None,
+    parse_mode=ParseMode.HTML
+):
+    if message.text:
+        await message.edit_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+        return
+
+    if message.caption:
+        await message.edit_caption(
+            caption=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+        return
+
+    await message.answer(
+        text,
+        reply_markup=reply_markup,
+        parse_mode=parse_mode
+    )
+
+
+async def return_to_admin_panel(message):
+    await message.answer(
+        "👑 <b>Панель администратора</b>\n\n"
+        "Выберите команду:",
+        reply_markup=get_admin_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
