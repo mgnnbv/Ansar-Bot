@@ -1,5 +1,6 @@
 import asyncio
 from mailbox import Message
+from aiogram.client.session.aiohttp import AiohttpSession
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -15,6 +16,9 @@ from handlers.for_admin_handlers import admin_router
 
 env = Env()
 env.read_env()
+
+session = AiohttpSession(proxy="http://127.0.0.1:12334")
+
 
 MANAGERS_IDS = {5129105635, 123456789, 987654321}
 
@@ -38,7 +42,7 @@ logging.basicConfig(level=logging.INFO)
 
 async def main():
 
-    bot =  Bot(token=env('TOKEN'), default=DefaultBotProperties(parse_mode='HTML'))
+    bot =  Bot(token=env('TOKEN'), default=DefaultBotProperties(parse_mode='HTML'), session=session)
 
 
     dp = Dispatcher()
